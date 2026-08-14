@@ -1,0 +1,68 @@
+{
+    "group_whitelist": {
+        "description": "群组白名单",
+        "hint": "只有在白名单里的群才能使用本插件功能，不填表示所有群都可使用",
+        "type": "list",
+        "default": []
+    },
+    "user_blacklist": {
+        "description": "用户黑名单",
+        "hint": "黑名单中的用户发送的消息不会被处理",
+        "type": "list",
+        "default": []
+    },
+    "day_start_time": {
+        "description": "每天开始时间",
+        "hint": "设置每天的开始时间，格式为HH:MM，比如设置为02:00意味着凌晨2点前都算前一天",
+        "type": "string",
+        "default": "00:00"
+    },
+    "auto_delete_last_month_data": {
+        "description": "自动删除上月数据",
+        "hint": "启用后每月初自动删除上月数据，禁用则保留历史数据可查看往月记录",
+        "type": "bool",
+        "default": true
+    },
+    "daily_max_checkins": {
+        "description": "每日最多喂蛋糕次数",
+        "hint": "设置每天最多喂给娅娅的蛋糕数，超过此数量将不再记录，设置为0表示无限制",
+        "type": "int",
+        "default": 0
+    },
+    "monthly_max_checkins": {
+        "description": "每月最多喂蛋糕次数",
+        "hint": "设置每月最多喂给娅娅的蛋糕数，超过此数量将不再记录，设置为0表示无限制",
+        "type": "int",
+        "default": 0
+    },
+    "ranking_display_count": {
+        "description": "排行每页展示用户数量",
+        "hint": "设置排行榜每页显示的用户数量，默认为10",
+        "type": "int",
+        "default": 10
+    },
+    "llm_enabled": {
+        "description": "启用 LLM 概率对话",
+        "hint": "开启后喂蛋糕到一定数量有概率触发娅娅的 LLM 撒娇回复，关闭则只有固定文案",
+        "type": "bool",
+        "default": true
+    },
+    "llm_trigger_probability": {
+        "description": "LLM 触发概率",
+        "hint": "喂蛋糕达到最低数量后，触发娅娅 LLM 回复的概率（0-1之间的小数）",
+        "type": "float",
+        "default": 0.3
+    },
+    "llm_daily_min_cakes": {
+        "description": "LLM 触发最低蛋糕数",
+        "hint": "当天累计喂满几块蛋糕后，才有概率触发娅娅的 LLM 回复",
+        "type": "int",
+        "default": 3
+    },
+    "llm_daily_limit": {
+        "description": "LLM 全群每日触发上限",
+        "hint": "每天全群最多触发几次娅娅的 LLM 回复（每个用户每天最多触发1次）",
+        "type": "int",
+        "default": 5
+    }
+}
