@@ -56,7 +56,11 @@
 
 ## 依赖
 
-无第三方依赖（AstrBot 自带 aiosqlite 与 Pillow）。将娅娅立绘图命名为 `denia.png` 放入插件目录，排行榜图顶部会自动显示。
+无第三方依赖（AstrBot 自带 aiosqlite 与 Pillow）。
+
+**资源文件夹 `resources/`（可选配置）：**
+- `resources/fonts/font.ttf`：中文字体。**插件包不携带字体**（体积大），需自行下载放入；未放入时会自动尝试系统字体（微软雅黑/思源黑体/Noto Sans CJK），全部缺失时图片生成降级为文字回复，打卡计数不受影响。下载指引见 [resources/README.md](resources/README.md)
+- `resources/denia.png`：娅娅立绘图（建议正方形 PNG），放入后排行榜图顶部自动显示
 
 ## 致谢
 

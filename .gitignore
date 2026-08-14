@@ -2,3 +2,8 @@ __pycache__/
 *.pyc
 tmp/
 avatars/
+# 用户自备资源：不随仓库发布
+resources/fonts/*.ttf
+resources/fonts/*.otf
+resources/fonts/*.ttc
+resources/denia.png

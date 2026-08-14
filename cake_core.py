@@ -24,13 +24,41 @@ CAKE_EMOJI = "\U0001F370"     # 🍰
 
 class CakeCore:
 
+    # 系统回退中文字体（resources/fonts 与插件根目录均无字体时使用）
+    SYSTEM_FONT_CANDIDATES = [
+        'C:/Windows/Fonts/msyh.ttc',
+        'C:/Windows/Fonts/msyhbd.ttc',
+        'C:/Windows/Fonts/simhei.ttf',
+        'C:/Windows/Fonts/simsun.ttc',
+        '/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc',
+        '/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc',
+        '/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc',
+        '/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf',
+    ]
+
     def __init__(self, font_path: str, db_path: str, temp_dir: str):
-        self.font_path = font_path
+        self._plugin_dir = os.path.dirname(font_path) if font_path else os.getcwd()
+        self.font_path = None
         self.db_path = db_path
         self.temp_dir = temp_dir
         self._emoji_font = None
+        # 中文字体候选：resources/fonts -> 插件根 -> 系统字体
+        font_candidates = [
+            os.path.join(self._plugin_dir, 'resources', 'fonts', 'font.ttf'),
+            font_path,
+        ] + self.SYSTEM_FONT_CANDIDATES
+        for fp in font_candidates:
+            if fp and os.path.exists(fp):
+                try:
+                    ImageFont.truetype(fp, 20)
+                    self.font_path = fp
+                    break
+                except Exception:
+                    continue
+        # emoji 字体候选：resources/fonts -> 插件根 -> 系统
         emoji_candidates = [
-            os.path.join(os.path.dirname(font_path), 'emoji.ttf'),
+            os.path.join(self._plugin_dir, 'resources', 'fonts', 'emoji.ttf'),
+            os.path.join(self._plugin_dir, 'emoji.ttf'),
             'C:/Windows/Fonts/seguiemj.ttf',
             '/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf',
             '/usr/share/fonts/noto/NotoColorEmoji.ttf',
@@ -52,7 +80,7 @@ class CakeCore:
         emoji_font = self._emoji_font
         try:
             size = getattr(font, 'size', 20) or 20
-            ep = getattr(self, '_emoji_path', None) or os.path.join(os.path.dirname(self.font_path), 'emoji.ttf')
+            ep = getattr(self, '_emoji_path', None) or os.path.join(self._plugin_dir, 'resources', 'fonts', 'emoji.ttf')
             if os.path.exists(ep):
                 emoji_font = ImageFont.truetype(ep, size)
         except Exception:
@@ -159,10 +187,14 @@ class CakeCore:
             return str(user_id)
 
     def _draw_denia_logo(self, img, draw, size=90, xy=None):
-        """顶部娅娅默认图案：大号 🍰 emoji。预留 denia.png 接口。"""
-        plugin_dir = os.path.dirname(self.font_path)
-        denia_png = os.path.join(plugin_dir, 'denia.png')
-        if os.path.exists(denia_png):
+        """顶部娅娅图案：优先 resources/denia.png（或插件根 denia.png），否则大号 🍰 emoji。"""
+        denia_png = None
+        for cand in (os.path.join(self._plugin_dir, 'resources', 'denia.png'),
+                     os.path.join(self._plugin_dir, 'denia.png')):
+            if os.path.exists(cand):
+                denia_png = cand
+                break
+        if denia_png:
             try:
                 av = Image.open(denia_png).convert("RGBA")
                 av = av.resize((size, size))
@@ -175,7 +207,7 @@ class CakeCore:
             except Exception:
                 pass
         try:
-            ep = getattr(self, '_emoji_path', None) or os.path.join(plugin_dir, 'emoji.ttf')
+            ep = getattr(self, '_emoji_path', None) or os.path.join(self._plugin_dir, 'resources', 'fonts', 'emoji.ttf')
             if os.path.exists(ep):
                 ef = ImageFont.truetype(ep, size)
                 w = draw.textlength(CAKE_EMOJI, font=ef)
@@ -518,7 +550,7 @@ class CakeCore:
         emoji_font = None
         try:
             size = getattr(font, 'size', 16) or 16
-            ep = getattr(self, '_emoji_path', None) or os.path.join(os.path.dirname(self.font_path), 'emoji.ttf')
+            ep = getattr(self, '_emoji_path', None) or os.path.join(self._plugin_dir, 'resources', 'fonts', 'emoji.ttf')
             if os.path.exists(ep):
                 emoji_font = ImageFont.truetype(ep, size)
         except Exception:
@@ -538,7 +570,7 @@ class CakeCore:
         emoji_font = None
         try:
             size = getattr(font, 'size', 16) or 16
-            ep = getattr(self, '_emoji_path', None) or os.path.join(os.path.dirname(self.font_path), 'emoji.ttf')
+            ep = getattr(self, '_emoji_path', None) or os.path.join(self._plugin_dir, 'resources', 'fonts', 'emoji.ttf')
             if os.path.exists(ep):
                 emoji_font = ImageFont.truetype(ep, size)
         except Exception:
@@ -557,7 +589,7 @@ class CakeCore:
     def _emoji_available(self):
         if getattr(self, '_emoji_font', None) is not None:
             return True
-        return os.path.exists(os.path.join(os.path.dirname(self.font_path), 'emoji.ttf'))
+        return os.path.exists(os.path.join(self._plugin_dir, 'resources', 'fonts', 'emoji.ttf'))
 
     async def _generate_and_send_calendar(self, event, user_id: str, user_name: str,
                                           db_path: str, adjusted_date_str: str = None):
@@ -598,6 +630,11 @@ class CakeCore:
             logger.error(f"查询用户 {user_name} ({user_id}) 的月度数据失败: {e}")
             return "查询日历数据时出错了 >_<", None, True
         image_path = ""
+        if not self.font_path:
+            # 未配置字体：降级为文字提示（resources/fonts 或系统字体均缺失）
+            return (f"未找到可用中文字体，无法生成日历图片。请将字体放入插件目录 "
+                    f"resources/fonts/font.ttf。本月您已投喂{len(checkin_records)}天，"
+                    f"累计{total_cakes_this_month}块🍰。", None, False)
         avatar_path = os.path.join(self.temp_dir, f"avatar_{user_id}.png")
         av = self._load_avatar(user_id)
         if av:
@@ -612,7 +649,7 @@ class CakeCore:
             return None, image_path, False
         except FileNotFoundError:
             logger.error("字体文件未找到！无法生成日历图片。")
-            return f"服务器缺少字体文件，无法生成日历图片。本月您已投喂{len(checkin_records)}天，累计{total_cakes_this_month}块🍰。", None, False
+            return f"服务器缺少字体文件，无法生成日历图片。请将字体放入插件目录 resources/fonts/font.ttf。本月您已投喂{len(checkin_records)}天，累计{total_cakes_this_month}块🍰。", None, False
         except Exception as e:
             logger.error(f"生成或发送日历图片失败: {e}")
             return "处理日历图片时发生了未知错误 >_<", None, True
