@@ -2,6 +2,8 @@ __pycache__/
 *.pyc
 tmp/
 avatars/
+# 设计方案渲染输出（本地跑脚本生成，不入库）
+design/render_out/
 # 用户自备资源：不随仓库发布
 resources/fonts/*.ttf
 resources/fonts/*.otf
