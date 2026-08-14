@@ -42,10 +42,16 @@ class CakeCore:
         self.db_path = db_path
         self.temp_dir = temp_dir
         self._emoji_font = None
+        self._init_fonts()
+
+    def _init_fonts(self):
+        """扫描字体候选并初始化（可重复调用以重载下载后的字体）。"""
+        self.font_path = None
+        self._emoji_font = None
         # 中文字体候选：resources/fonts -> 插件根 -> 系统字体
         font_candidates = [
             os.path.join(self._plugin_dir, 'resources', 'fonts', 'font.ttf'),
-            font_path,
+            os.path.join(self._plugin_dir, 'font.ttf'),
         ] + self.SYSTEM_FONT_CANDIDATES
         for fp in font_candidates:
             if fp and os.path.exists(fp):
@@ -71,6 +77,46 @@ class CakeCore:
                     break
                 except Exception:
                     continue
+
+    # ------------------------------------------------------------ 字体自动下载
+    def _download_file(self, url: str, dest: str) -> bool:
+        """同步下载单个文件到目标路径，失败返回 False。"""
+        import urllib.request
+        try:
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                data = resp.read()
+            if not data:
+                return False
+            with open(dest, 'wb') as f:
+                f.write(data)
+            return True
+        except Exception as e:
+            logger.error(f"下载 {url} 失败: {e}")
+            return False
+
+    async def ensure_fonts(self, font_url: str = None, emoji_url: str = None) -> None:
+        """resources/fonts 缺失时自动下载默认字体（失败静默，不阻塞使用）。
+
+        Args:
+            font_url: 中文字体下载地址，None 表示不下载。
+            emoji_url: emoji 字体下载地址，None 表示不下载。
+        """
+        if font_url:
+            target = os.path.join(self._plugin_dir, 'resources', 'fonts', 'font.ttf')
+            if not os.path.exists(target):
+                ok = await asyncio.to_thread(self._download_file, font_url, target)
+                if ok:
+                    logger.info("默认中文字体下载成功")
+        if emoji_url and self._emoji_font is None:
+            target = os.path.join(self._plugin_dir, 'resources', 'fonts', 'emoji.ttf')
+            if not os.path.exists(target):
+                ok = await asyncio.to_thread(self._download_file, emoji_url, target)
+                if ok:
+                    logger.info("默认 emoji 字体下载成功")
+        if font_url or emoji_url:
+            self._init_fonts()
 
     def _draw_text(self, draw, xy, text, font, fill, anchor=None):
         """逐字符绘制文本，emoji 用 emoji 字体，支持 embedded_color。"""

@@ -64,5 +64,23 @@
         "hint": "每天全群最多触发几次娅娅的 LLM 回复（每个用户每天最多触发1次）",
         "type": "int",
         "default": 5
+    },
+    "auto_download_font": {
+        "description": "自动下载默认字体",
+        "hint": "resources/fonts 无字体时自动从默认地址下载（阿里妈妈方圆体 + emoji 字体），失败则回退系统字体",
+        "type": "bool",
+        "default": true
+    },
+    "font_download_url": {
+        "description": "中文字体下载地址",
+        "hint": "自备字体时填自己的下载链接，留空使用默认（托管于本插件 GitHub Releases）",
+        "type": "string",
+        "default": "https://github.com/xiaoxi2760/astrbot_plugin_cake_denia/releases/download/v0.0.0/font.ttf"
+    },
+    "emoji_download_url": {
+        "description": "emoji 字体下载地址",
+        "hint": "自备字体时填自己的下载链接，留空使用默认；Windows 系统自带 emoji 字体可不填",
+        "type": "string",
+        "default": "https://github.com/xiaoxi2760/astrbot_plugin_cake_denia/releases/download/v0.0.0/emoji.ttf"
     }
 }

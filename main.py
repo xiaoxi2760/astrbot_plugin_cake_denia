@@ -25,6 +25,10 @@ from .cake_core import CakeCore
 FONT_FILE = "font.ttf"
 DB_NAME = "yaya_cake.db"
 
+# 默认字体下载地址（托管在本插件 GitHub Releases 附件）
+DEFAULT_FONT_URL = "https://github.com/xiaoxi2760/astrbot_plugin_cake_denia/releases/download/v0.0.0/font.ttf"
+DEFAULT_EMOJI_URL = "https://github.com/xiaoxi2760/astrbot_plugin_cake_denia/releases/download/v0.0.0/emoji.ttf"
+
 # 娅娅的撒娇文案
 FEED_SUCCESS = [
     "娅娅眼睛一亮，开心地吃掉了小蛋糕～谢谢！蛋糕真好吃！🍰",
@@ -101,6 +105,9 @@ class CakeDeniaPlugin(Star):
             self.llm_trigger_probability = 0.3
         self.llm_daily_min_cakes = int(config.get("llm_daily_min_cakes", 3))
         self.llm_daily_limit = int(config.get("llm_daily_limit", 5))
+        self.auto_download_font = bool(config.get("auto_download_font", True))
+        self.font_download_url = config.get("font_download_url", DEFAULT_FONT_URL)
+        self.emoji_download_url = config.get("emoji_download_url", DEFAULT_EMOJI_URL)
 
         data_dir = StarTools.get_data_dir("astrbot_plugin_cake_denia")
         plugin_dir = os.path.dirname(os.path.abspath(__file__))
@@ -128,6 +135,9 @@ class CakeDeniaPlugin(Star):
                 return
             await self._init_db()
             await self._monthly_cleanup()
+            # 资源字体缺失时自动下载默认字体（失败静默降级，不影响使用）
+            if self.auto_download_font:
+                await self.core.ensure_fonts(self.font_download_url, self.emoji_download_url)
             self._initialized = True
 
     async def _init_db(self):

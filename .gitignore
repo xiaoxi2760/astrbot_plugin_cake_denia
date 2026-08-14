@@ -6,4 +6,5 @@ avatars/
 resources/fonts/*.ttf
 resources/fonts/*.otf
 resources/fonts/*.ttc
+resources/fonts/*.bak*
 resources/denia.png
