@@ -13,7 +13,7 @@ desc: |
   - 🏆 成就系统：累计、连续、单日暴击、替喂/被喂共 13 项成就
   - 🤖 LLM 概率对话：喂到一定数量后娅娅会用 LLM 撒娇回应（可配置概率与次数限制）
   - 群白名单、用户黑名单、每日/每月上限等均可配置
-version: 0.0.0
+version: 0.0.1
 author: xiaoxi2760
 repo: https://github.com/xiaoxi2760/astrbot_plugin_cake_denia
 astrbot_version: ">=4.5.7"

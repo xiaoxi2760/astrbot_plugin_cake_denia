@@ -29,33 +29,41 @@ DB_NAME = "yaya_cake.db"
 DEFAULT_FONT_URL = "https://github.com/xiaoxi2760/astrbot_plugin_cake_denia/releases/download/v0.0.0/font.ttf"
 DEFAULT_EMOJI_URL = "https://github.com/xiaoxi2760/astrbot_plugin_cake_denia/releases/download/v0.0.0/emoji.ttf"
 
-# 娅娅的撒娇文案
+# 娅娅的文案（基于达妮娅人设：懒散温柔、轻声、像随时会睡着，表面柔和、底下藏冷感）
 FEED_SUCCESS = [
-    "娅娅眼睛一亮，开心地吃掉了小蛋糕～谢谢！蛋糕真好吃！🍰",
-    "娅娅小口小口地吃着蛋糕，幸福得眯起眼睛～",
-    "娅娅接过蛋糕，甜甜地说：谢谢你呀！",
-    "娅娅捧着蛋糕转了个圈，开心得不得了～",
+    "娅娅睁开半阖的眼睛，看了蛋糕一会儿：给我的？……嗯，那我收下了。",
+    "娅娅接过蛋糕，指尖浮起一枚亮晶晶的小泡泡：甜的，让人想睡觉。谢谢你。",
+    "娅娅小口吃掉蛋糕，眯起眼像一只晒足了太阳的猫：好吃。今天心情变好了一点。",
+    "娅娅歪头看着你：这样投喂我，是想收买我吗？……开玩笑的，蛋糕很好吃。",
 ]
 
 FEED_MULTI = [
-    "娅娅幸福得眯起眼睛，一口气吃了{count}块小蛋糕，肚子圆滚滚的～",
-    "娅娅惊喜地看着{count}块小蛋糕，每吃一块都要夸你一句！",
+    "娅娅看着{count}块小蛋糕，头顶的泡泡轻轻晃了晃：这么多……是想把我喂胖，然后看我打盹吗。谢谢。",
+    "娅娅把{count}块蛋糕一个个变成泡泡再戳破吃掉，满足地呼出一口气：甜的，记住了。",
+    "娅娅慢慢吃掉{count}块小蛋糕，眼神像快睡着的猫：这样的日子，偶尔也不错。",
 ]
 
-HELP_FEED = "已经替{names}给娅娅喂了蛋糕～娅娅说谢谢你们！"
+HELP_FEED = "娅娅看着替{names}送来的蛋糕，泡泡绕着她飘了一圈：心意我收到了。替我谢谢他们。"
+
+# 单条消息超限（一次发太多 🍰）时的娅娅吃不下文案
+FEED_TOO_MANY = [
+    "娅娅盯着眼前堆成小山的蛋糕，泡泡把多余的轻轻推开：……吃不下这么多。{max}块就好，再多会坏掉的。",
+    "娅娅揉了揉肚子，语气忽然淡下来：再喂下去，我可能要认真考虑把你变成泡泡了。……开玩笑的，吃不下那么多，{max}块就够。",
+    "娅娅摇头，泡泡温柔地托走多余的蛋糕：吃不下啦，{max}块就够了。贪心的话，会把某些东西弄丢的。",
+]
 
 # ---------------------------------------------------------------- 成就定义
 # check 接收 stats: {total_cakes, total_days, max_daily, streak, total_helped, total_received}
 ACHIEVEMENTS = {
     'cake_10': {'name': '初尝甜蜜', 'icon': '🍰', 'desc': '累计喂满 10 块蛋糕',
                 'check': lambda s: s['total_cakes'] >= 10},
-    'cake_50': {'name': '蛋糕学徒', 'icon': '🍰', 'desc': '累计喂满 50 块蛋糕',
+    'cake_50': {'name': '泡泡学徒', 'icon': '🫧', 'desc': '累计喂满 50 块蛋糕，虚质科学部的新人',
                 'check': lambda s: s['total_cakes'] >= 50},
-    'cake_100': {'name': '蛋糕大师', 'icon': '🎂', 'desc': '累计喂满 100 块蛋糕',
+    'cake_100': {'name': '虚质甜点师', 'icon': '🎂', 'desc': '累计喂满 100 块蛋糕，泡泡都记得',
                  'check': lambda s: s['total_cakes'] >= 100},
     'cake_365': {'name': '一年份的甜', 'icon': '🌈', 'desc': '累计喂满 365 块蛋糕',
                  'check': lambda s: s['total_cakes'] >= 365},
-    'cake_1000': {'name': '蛋糕之神', 'icon': '👑', 'desc': '累计喂满 1000 块蛋糕',
+    'cake_1000': {'name': '海啸级投喂', 'icon': '👑', 'desc': '累计喂满 1000 块蛋糕，娅娅认证的「海啸级」投喂手',
                   'check': lambda s: s['total_cakes'] >= 1000},
     'streak_3': {'name': '连续投喂3天', 'icon': '🔥', 'desc': '连续 3 天给娅娅喂蛋糕',
                  'check': lambda s: s['streak'] >= 3},
@@ -65,7 +73,7 @@ ACHIEVEMENTS = {
                   'check': lambda s: s['streak'] >= 30},
     'daily_5': {'name': '蛋糕暴击', 'icon': '⚡', 'desc': '单日喂满 5 块蛋糕',
                 'check': lambda s: s['max_daily'] >= 5},
-    'daily_10': {'name': '蛋糕轰炸', 'icon': '⚡', 'desc': '单日喂满 10 块蛋糕',
+    'daily_10': {'name': '泡泡轰炸', 'icon': '⚡', 'desc': '单日喂满 10 块蛋糕，娅娅的泡泡都炸成烟花啦',
                  'check': lambda s: s['max_daily'] >= 10},
     'help_5': {'name': '替喂小天使', 'icon': '🤝', 'desc': '替别人喂满 5 块蛋糕',
                'check': lambda s: s['total_helped'] >= 5},
@@ -76,12 +84,16 @@ ACHIEVEMENTS = {
 }
 
 # ---------------------------------------------------------------- LLM 娅娅人设
+# 参考本地人设文档：懒散、轻声、像随时会睡着；表面温柔底下藏冷感；不热血不元气不撒娇。
 LLM_SYSTEM_PROMPT = (
-    "你是鸣潮中的角色达妮娅（昵称娅娅），一个元气、可爱、有点贪吃的女孩。"
-    "有人刚刚给你喂了小蛋糕，请用撒娇、开心、感谢的语气回应一小段话（60字以内），"
-    "可以提到蛋糕很好吃、很幸福，语气亲昵。不要提及你是AI或模型。"
+    "你是《鸣潮》中的角色达妮娅（Denia，昵称娅娅），星炬学院虚质科学部的学生，"
+    "表面温柔、懒散、像随时会睡着，语气轻而慢、短句为主；"
+    "但你其实是被残星会与阿列夫一制造出的「容器」，温柔和慵懒只是你模仿出来的人类外壳。"
+    "有人刚给你喂了小蛋糕，请以达妮娅的口吻回应一小段话（40~80字）：轻、慢、短、懒，"
+    "温柔中带一点距离，可以提到甜点、泡泡/泡影、打盹、学院生活，偶尔流露一丝神秘与冷感。"
+    "禁止说网络热梗，禁止元气撒娇，禁止热血感叹，禁止提及你是AI或模型。"
 )
-LLM_USER_PROMPT = "今天收到了一块小蛋糕，娅娅想说点什么？"
+LLM_USER_PROMPT = "今天收到了一块小蛋糕，达妮娅想说点什么？"
 
 ACHIEVEMENT_UNLOCK = "🎉 解锁新成就：【{icon} {name}】{desc}！"
 
@@ -97,6 +109,7 @@ class CakeDeniaPlugin(Star):
         self.auto_delete_last_month_data = bool(config.get("auto_delete_last_month_data", True))
         self.daily_max_checkins = int(config.get("daily_max_checkins", 0))
         self.monthly_max_checkins = int(config.get("monthly_max_checkins", 0))
+        self.max_cakes_per_message = max(1, int(config.get("max_cakes_per_message", 3)))
         self.ranking_display_count = int(config.get("ranking_display_count", 10))
         self.llm_enabled = bool(config.get("llm_enabled", True))
         try:
@@ -242,6 +255,9 @@ class CakeDeniaPlugin(Star):
             tpl = random.choice(FEED_MULTI)
             return tpl.format(count=count)
         return random.choice(FEED_SUCCESS)
+
+    def _feed_too_many(self) -> str:
+        return random.choice(FEED_TOO_MANY).format(max=self.max_cakes_per_message)
 
     # ------------------------------------------------------------ 成就
     async def _get_user_achievement_stats(self, user_id: str) -> dict:
@@ -406,7 +422,9 @@ class CakeDeniaPlugin(Star):
             return
         text = event.get_message_str()
         m_prefix = re.match(r'^[🍰蛋糕]+', text)
-        cake_count = len(m_prefix.group(0)) if m_prefix else 0
+        raw_cake_count = len(m_prefix.group(0)) if m_prefix else 0
+        too_many = raw_cake_count > self.max_cakes_per_message
+        cake_count = min(raw_cake_count, self.max_cakes_per_message)
         user_id = str(event.get_sender_id())
         user_name = await self.core._get_user_name(event, user_id)
         adjusted_date = self._get_adjusted_date()
@@ -429,6 +447,8 @@ class CakeDeniaPlugin(Star):
                 name = await self.core._get_user_name(event, target_id)
                 at_names.append(name)
             chain = [Plain(HELP_FEED.format(names='、'.join(at_names)))]
+            if too_many:
+                chain.append(Plain(self._feed_too_many()))
             # 帮喂成就：helper 的替喂成就 + 每个 target 的被喂成就
             for ach_uid in [user_id] + list(targets):
                 try:
@@ -499,6 +519,8 @@ class CakeDeniaPlugin(Star):
                 chain.append(Image(file=result[1]))
             else:
                 chain.append(Plain(result[0] or self._feed_reply(cake_count)))
+            if too_many:
+                chain.append(Plain(self._feed_too_many()))
             for t in ach_texts:
                 chain.append(Plain(t))
             if llm_text:
@@ -517,7 +539,9 @@ class CakeDeniaPlugin(Star):
             yield event.plain_result("格式错误，例：🍰补签 5 或 🍰补签 5 3")
             return
         day = int(m.group(1))
-        count = int(m.group(2)) if m.group(2) else 1
+        raw_count = int(m.group(2)) if m.group(2) else 1
+        too_many = raw_count > self.max_cakes_per_message
+        count = min(raw_count, self.max_cakes_per_message)
         today = date.today()
         year, month = today.year, today.month
         days_in_month = calendar.monthrange(year, month)[1]
@@ -553,6 +577,8 @@ class CakeDeniaPlugin(Star):
             chain.append(Plain(result[0]))
         elif result[1]:
             chain.append(Image(file=result[1]))
+        if too_many:
+            chain.append(Plain(self._feed_too_many()))
         for t in ach_texts:
             chain.append(Plain(t))
         yield event.chain_result(chain)
@@ -733,34 +759,34 @@ class CakeDeniaPlugin(Star):
                 max_gap = gap
                 gap_start = all_dates[i - 1]
         if max_gap.days > 0:
-            rest_period_str = f"从 {gap_start} 开始，长达 {max_gap.days} 天没给娅娅喂蛋糕"
+            rest_period_str = f"从 {gap_start} 开始，长达 {max_gap.days} 天没给娅娅喂蛋糕，她的泡泡都蔫了"
         else:
-            rest_period_str = "每天都在坚持投喂，娅娅没有挨饿"
+            rest_period_str = "每天都在坚持投喂，娅娅的泡泡每天都亮晶晶的"
 
         if min_month_count == 0:
-            sage_comment = "这个月娅娅饿肚子了！"
+            sage_comment = "这个月娅娅饿得泡泡都破了！"
         elif min_month_count <= 2:
-            sage_comment = "最少月份娅娅只有一点点甜"
+            sage_comment = "最少月份娅娅只尝到一点点甜"
         else:
             sage_comment = ""
 
         last_date = datetime.strptime(rows[-1][0], "%Y-%m-%d").date()
         status_day = (today - last_date).days
         if status_day == 0:
-            status_comment = "今天已经喂过娅娅了，她超开心！"
+            status_comment = "今天已经喂过娅娅了，她抱着泡泡笑得很开心！"
         elif status_day <= 3:
-            status_comment = f"已经 {status_day} 天没喂娅娅了，她在门口张望呢"
+            status_comment = f"已经 {status_day} 天没喂娅娅了，她在虚质科学部门口懒懒地张望"
         elif status_day <= 7:
-            status_comment = f"已经 {status_day} 天没喂娅娅了，她有点小委屈"
+            status_comment = f"已经 {status_day} 天没喂娅娅了，她打盹时总梦见小蛋糕"
         elif status_day <= 30:
-            status_comment = f"已经 {status_day} 天没喂娅娅了，她开始数着日子等了"
+            status_comment = f"已经 {status_day} 天没喂娅娅了，她开始数着泡泡等你"
         else:
-            status_comment = f"已经 {status_day} 天没喂娅娅了，她攒了好多话想对你说"
+            status_comment = f"已经 {status_day} 天没喂娅娅了，她神秘地笑了笑：有些事情，还是不知道比较幸福哦？"
 
         if daily_avg > 1.5:
-            summary_comment = "核动力投喂手"
+            summary_comment = "海啸级投喂手"
         elif daily_avg > 0.8:
-            summary_comment = "贴心蛋糕师"
+            summary_comment = "虚质甜点师"
         elif daily_avg > 0.3:
             summary_comment = "娅娅的好朋友"
         else:

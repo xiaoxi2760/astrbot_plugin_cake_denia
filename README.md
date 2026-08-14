@@ -48,6 +48,7 @@
 | auto_delete_last_month_data | bool | true | 自动清理旧数据 |
 | daily_max_checkins | int | 0 | 每日最多喂蛋糕数，0 无限制 |
 | monthly_max_checkins | int | 0 | 每月最多喂蛋糕数，0 无限制 |
+| max_cakes_per_message | int | 3 | 单条消息最多喂蛋糕数，超出提示娅娅吃不下 |
 | ranking_display_count | int | 10 | 排行每页人数 |
 | llm_enabled | bool | true | LLM 对话总开关 |
 | llm_trigger_probability | float | 0.3 | LLM 触发概率 |

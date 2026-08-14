@@ -351,7 +351,7 @@ class CakeCore:
             y_offset += cell_height
 
         total_days = len(checkin_data)
-        summary_text = f"本月娅娅吃了 {total_days} 天的蛋糕，共 {total_cakes} 块"
+        summary_text = f"本月娅娅吃了 {total_days} 天的蛋糕，共 {total_cakes} 块 · 泡泡都记住了🫧"
         self._draw_text(draw, (WIDTH / 2, HEIGHT - 25), summary_text, font=font_summary, fill=HEADER_COLOR, anchor="mm")
 
         file_path = os.path.join(self.temp_dir, f"cake_{user_id}_{int(time.time())}.png")
@@ -431,15 +431,15 @@ class CakeCore:
             report += f"最长连续投喂 {max_consecutive} 天，小小的坚持也很甜！\n"
         report += f"本月投喂率：{checkin_rate:.1%}\n\n"
         if freq_per_day >= 1.3:
-            report += "娅娅：哇，你也太宠我了！\n每天都吃到小蛋糕，娅娅要幸福得冒泡了！\n不过蛋糕吃多了会胖胖的，娅娅会努力运动的！"
+            report += "娅娅：每天都有小蛋糕……泡泡都跟着飘起来了。\n不过吃太多会胖的，娅娅可不想动。"
         elif freq_per_day >= 0.7:
-            report += "娅娅：每天都有蛋糕吃，娅娅好开心！\n你是全世界最好的蛋糕投喂员～"
+            report += "娅娅：有蛋糕、有热闹看、还有人陪着……这样的日子，好像也不错。"
         elif freq_per_day >= 0.4:
-            report += "娅娅：蛋糕甜甜的，娅娅心里也甜甜的～\n要继续保持哦！"
+            report += "娅娅：甜丝丝的，像泡泡轻轻飘过脸颊。继续保持就好。"
         elif freq_per_day >= 0.1:
-            report += "娅娅：偶尔的小蛋糕也很幸福！\n娅娅期待下次的甜蜜投喂～"
+            report += "娅娅：偶尔的小甜头也不错，娅娅懒懒地等着下一次投喂～"
         else:
-            report += "娅娅：这个月蛋糕有点少呢…\n但是没关系，娅娅会乖乖等你的！"
+            report += "娅娅：这个月的蛋糕有点少呢…\n没关系，娅娅打盹的时候会梦到它们的。"
         report += "\n\n小贴士：甜食要适度，娅娅更想每天都见到你～"
         return report, checkin_rate
 
@@ -456,14 +456,14 @@ class CakeCore:
         report += f"最宠娅娅的月份：{max_month_num}月，当月喂了 {max_month_cakes} 块，娅娅都记在心里呢～\n\n"
         avg_per_month = total_cakes / 12
         if avg_per_month > 25:
-            report += "年度评价：娅娅的专属甜品师！\n全年无休的甜蜜投喂，娅娅幸福得想跳舞～"
+            report += "年度评价：阿列夫级的甜蜜投喂！\n全年无休，娅娅的泡泡都快装不下了。"
         elif avg_per_month > 15:
-            report += "年度评价：金牌蛋糕投喂员！\n稳定输出甜蜜，娅娅非常满意！"
+            report += "年度评价：虚质学部金牌投喂员！\n稳定输出甜蜜，娅娅很满意。"
         elif avg_per_month > 8:
             report += "年度评价：贴心蛋糕师！\n有节制有甜蜜，娅娅觉得刚刚好～"
         else:
             report += "年度评价：娅娅的好朋友！\n虽然蛋糕不多，但娅娅知道你是真心喜欢她的～"
-        report += "\n\n新的一年，娅娅也期待你的小蛋糕！"
+        report += "\n\n新的一年，娅娅还会在学院门口懒懒地等你来投喂～"
         return report
 
     def _create_analysis_image(self, user_name: str, target_period: str, analysis_result: str,

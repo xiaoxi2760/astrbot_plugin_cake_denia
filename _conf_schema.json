@@ -35,6 +35,12 @@
         "type": "int",
         "default": 0
     },
+    "max_cakes_per_message": {
+        "description": "单条消息最多喂蛋糕数",
+        "hint": "一条消息发多个🍰最多只计入该数量，超出会提示娅娅吃不下，防止一条消息刷满成就",
+        "type": "int",
+        "default": 3
+    },
     "ranking_display_count": {
         "description": "排行每页展示用户数量",
         "hint": "设置排行榜每页显示的用户数量，默认为10",
