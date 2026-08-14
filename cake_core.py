@@ -270,17 +270,17 @@ class CakeCore:
         DAY_COLOR = (90, 70, 80)
         TODAY_BG_COLOR = (255, 228, 235)
 
-        font_header = ImageFont.truetype(self.font_path, 32)
-        font_header_small = ImageFont.truetype(self.font_path, 24)
+        font_title = ImageFont.truetype(self.font_path, 26)
+        font_subtitle = ImageFont.truetype(self.font_path, 15)
         font_weekday = ImageFont.truetype(self.font_path, 18)
         font_day = ImageFont.truetype(self.font_path, 20)
-        font_check_mark = ImageFont.truetype(self.font_path, 32)
         font_cake_count = ImageFont.truetype(self.font_path, 16)
         font_summary = ImageFont.truetype(self.font_path, 18)
 
         img = Image.new("RGB", (WIDTH, HEIGHT), BG_COLOR)
         draw = ImageDraw.Draw(img)
 
+        # 左上角 QQ 头像
         if avatar_path and os.path.exists(avatar_path):
             try:
                 av = Image.open(avatar_path).convert("RGBA")
@@ -293,44 +293,38 @@ class CakeCore:
             except Exception:
                 pass
 
-        left_text = f"{year}年{month}月 - "
-        right_text = "的娅娅小蛋糕"
-        self._draw_text(draw, (65, 20), left_text, font=font_header, fill=HEADER_COLOR, anchor="lt")
-        w_right = self._measure_text_width(draw, right_text, font_header)
-        self._draw_text(draw, (WIDTH - 40 - w_right, 20), right_text, font=font_header, fill=HEADER_COLOR, anchor="lt")
-        w_left = self._measure_text_width(draw, left_text, font_header)
-        mid_left = 65 + w_left
-        mid_right = WIDTH - 40 - w_right
-        mid_center = (mid_left + mid_right) / 2
-        mid_w = mid_right - mid_left
-        if mid_w < 10:
-            mid_w = 10
-        has_emoji = any(ord(ch) > 0xFFFF for ch in user_name)
-        if has_emoji and not self._emoji_available():
-            pass
-        else:
-            chosen = None
-            for f in (font_header, font_header_small):
-                if self._measure_text_width(draw, user_name, f) <= mid_w:
-                    chosen = (user_name, f)
-                    break
-            if chosen is None:
-                truncated = self._truncate_text(draw, user_name, font_header_small, mid_w)
-                if truncated:
-                    chosen = (truncated, font_header_small)
-            if chosen:
-                text, f = chosen
-                self._draw_text(draw, (mid_center, 20), text, font=f, fill=HEADER_COLOR, anchor="mt")
+        # 主标题："{用户名}的投喂日历" 居中，超长截断（不再不显示）
+        title_text = f"{user_name}的投喂日历"
+        max_title_w = WIDTH - 150
+        if self._measure_text_width(draw, title_text, font_title) > max_title_w:
+            truncated = self._truncate_text(draw, title_text, font_title, max_title_w)
+            if truncated:
+                title_text = truncated
+        self._draw_text(draw, (WIDTH / 2, 28), title_text, font=font_title, fill=HEADER_COLOR, anchor="mm")
+
+        # 副标题：年月日（小字号，不再用大标题）
+        subtitle = f"{year}年{month}月"
+        self._draw_text(draw, (WIDTH / 2, 58), subtitle, font=font_subtitle, fill=WEEKDAY_COLOR, anchor="mm")
 
         weekdays = ["一", "二", "三", "四", "五", "六", "日"]
         cell_width = WIDTH / 7
         for i, day in enumerate(weekdays):
-            draw.text((i * cell_width + cell_width / 2, 75), day, font=font_weekday, fill=WEEKDAY_COLOR, anchor="mm")
+            draw.text((i * cell_width + cell_width / 2, 82), day, font=font_weekday, fill=WEEKDAY_COLOR, anchor="mm")
 
         cal = calendar.monthcalendar(year, month)
-        y_offset = 105
+        y_offset = 112
         cell_height = 65
         today_num = date.today().day if date.today().year == year and date.today().month == month else 0
+
+        # 投喂日 emoji 图标字体（🍰），不可用时回退红色勾
+        cake_emoji_font = None
+        if self._emoji_available():
+            try:
+                ep = getattr(self, '_emoji_path', None)
+                if ep and os.path.exists(ep):
+                    cake_emoji_font = ImageFont.truetype(ep, 32)
+            except Exception:
+                cake_emoji_font = None
 
         for week in cal:
             for i, day_num in enumerate(week):
@@ -340,14 +334,18 @@ class CakeCore:
                 if day_num == today_num:
                     draw.rectangle([x_pos, y_offset, x_pos + cell_width, y_offset + cell_height], fill=TODAY_BG_COLOR)
 
-                draw.text((x_pos + cell_width / 2, y_offset + cell_height / 2 - 18), str(day_num), font=font_day, fill=DAY_COLOR, anchor="mm")
+                draw.text((x_pos + cell_width / 2, y_offset + cell_height / 2 - 20), str(day_num), font=font_day, fill=DAY_COLOR, anchor="mm")
 
                 if day_num in checkin_data:
                     cx = x_pos + cell_width / 2
-                    cy = y_offset + cell_height / 2 + 8
-                    draw.line(
-                        [(cx - 13, cy), (cx - 5, cy + 8), (cx + 14, cy - 9)],
-                        fill=CAKE_RED, width=4, joint="curve")
+                    cy = y_offset + cell_height / 2 + 9
+                    if cake_emoji_font is not None:
+                        # 投喂日覆盖 🍰 图标
+                        draw.text((cx, cy), CAKE_EMOJI, font=cake_emoji_font, anchor="mm", embedded_color=True)
+                    else:
+                        draw.line(
+                            [(cx - 13, cy), (cx - 5, cy + 8), (cx + 14, cy - 9)],
+                            fill=CAKE_RED, width=4, joint="curve")
                     count = checkin_data[day_num]
                     draw.text((x_pos + cell_width - 5, y_offset + cell_height - 5), str(count), font=font_cake_count, fill=CAKE_RED, anchor="rd")
             y_offset += cell_height
