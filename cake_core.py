@@ -351,7 +351,7 @@ class CakeCore:
             y_offset += cell_height
 
         total_days = len(checkin_data)
-        summary_text = f"本月娅娅吃了 {total_days} 天的蛋糕，共 {total_cakes} 块"
+        summary_text = f"本月投喂娅娅 {total_days} 天，共 {total_cakes} 块蛋糕"
         self._draw_text(draw, (WIDTH / 2, HEIGHT - 25), summary_text, font=font_summary, fill=HEADER_COLOR, anchor="mm")
 
         file_path = os.path.join(self.temp_dir, f"cake_{user_id}_{int(time.time())}.png")
