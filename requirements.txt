@@ -1,1 +1,2 @@
-astrbot
+# 第三方依赖，每行一个，可带版本号。无额外依赖则留空。
+# 本插件使用 aiosqlite 与 Pillow，AstrBot 已内置，无需额外声明。

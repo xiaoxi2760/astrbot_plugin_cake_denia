@@ -1,60 +1,63 @@
-# 🍰 娅娅的小蛋糕（cake_denia）
+# astrbot_plugin_cake_denia
 
-一款为 [AstrBot](https://github.com/AstrBotDevs/AstrBot) 框架设计的**鸣潮达妮娅（娅娅）专属喂蛋糕插件**。
+今天你给娅娅喂小蛋糕了吗？发送 🍰（或「蛋糕」）就可以给鸣潮达妮娅（娅娅）喂一块小蛋糕！
 
-今天你给娅娅喂小蛋糕了吗？发送 🍰 就可以给娅娅喂一块小蛋糕！
+一款为 [AstrBot](https://github.com/AstrBotDevs/AstrBot) 框架设计的趣味喂蛋糕插件。
 
-## 命令
+## 功能
 
-| 命令 | 功能 |
-|---|---|
-| `🍰` / `蛋糕`（可连发，`🍰🍰🍰`=3块） | 给娅娅喂小蛋糕 |
-| `🍰 @某人` | 替某人喂娅娅蛋糕 |
-| `🍰日历` | 查看娅娅本月日历（粉色系） |
-| `🍰报告` / `🍰分析` [月/年] | 娅娅投喂分析报告 |
-| `🍰生涯` | 投喂生涯档案 |
-| `🍰补签 DD [次数]` | 补签某天 |
-| `🍰榜` [页码] | 排行榜（自己喂/被喂/替喂 × 今日/本月，含成就徽章） |
-| `🍰成就` | 查看成就墙 |
-| `🍰重置榜单` | 管理员重置今日计数（可@他人） |
-| `🍰帮助` | 帮助 |
-
-## 特性
-
-- **双系统文案**：全部回复为娅娅撒娇元气风
-- **成就系统**：13 项成就（累计喂满 10/50/100/365/1000 块、连续 3/7/30 天、单日暴击、替喂/被喂），解锁瞬间提示，排行榜显示 🏆 徽章
-- **LLM 概率对话**：当天喂满 3 块后，有概率（默认 30%）触发娅娅的 LLM 撒娇回复；每个用户每天最多 1 次，全群每天最多 5 次（可配置）
-- **粉色主题图片**：日历/排行/报告/生涯图均为粉色蛋糕主题
-- **娅娅立绘接口**：将娅娅图片命名为 `denia.png` 放入插件目录，日历图/排行图顶部自动使用（不放置则用 🍰 emoji）
-- 每日/每月喂蛋糕上限、群白名单、用户黑名单、凌晨起始时间等均可配置
-
-## 配置
-
-| 配置项 | 默认 | 说明 |
-|---|---|---|
-| `group_whitelist` | 空 | 群白名单，不填全群可用 |
-| `user_blacklist` | 空 | 用户黑名单 |
-| `day_start_time` | `00:00` | 每天开始时间 |
-| `auto_delete_last_month_data` | `true` | 自动清理旧数据 |
-| `daily_max_checkins` / `monthly_max_checkins` | `0` | 每日/每月喂蛋糕上限，0 无限制 |
-| `ranking_display_count` | `10` | 排行每页人数 |
-| `llm_enabled` | `true` | LLM 对话总开关 |
-| `llm_trigger_probability` | `0.3` | LLM 触发概率 |
-| `llm_daily_min_cakes` | `3` | 当日喂满几块才可触发 LLM |
-| `llm_daily_limit` | `5` | 全群每日 LLM 触发上限 |
+- 🍰 / 蛋糕 喂蛋糕（连发计数，`🍰🍰🍰` = 3 块），娅娅撒娇回应 + 自动生成粉色日历图
+- 🍰 @某人 替别人喂蛋糕
+- 🍰日历：查看娅娅本月日历（粉色系图片）
+- 🍰报告 / 🍰分析 [月|年]：娅娅投喂分析报告
+- 🍰生涯：投喂生涯档案
+- 🍰补签 DD [次数]：补签某天
+- 🍰榜 [页码]：排行榜（自己喂/被喂/替喂 × 今日/本月，含成就徽章）
+- 🍰成就：查看成就墙
+- 🍰重置榜单：管理员重置今日计数（可@他人）
+- 🍰帮助：查看帮助
 
 ## 安装
 
-在 AstrBot 插件管理页面上传 zip 安装（将 `cake_denia/` 目录打包为 zip）。
+将插件目录 `astrbot_plugin_cake_denia` 放入 AstrBot 的 `data/plugins/`，在管理面板「插件管理」中启用；或将插件目录打包为 zip 后在「插件管理」页面上传安装。
 
-## 数据
+## 使用
 
-数据库位于 `data/plugin_data/cake_denia/`（`yaya_cake.db`），包含：
-- `checkin`：喂蛋糕记录（user_id, group_id, checkin_date, cake_count）
-- `help_record`：帮喂记录
-- `achievements`：成就解锁记录
-- `metadata`：LLM 触发计数等
+| 指令 | 说明 |
+| --- | --- |
+| `🍰` / `蛋糕` | 给娅娅喂一块小蛋糕 |
+| `🍰 @某人` | 替某人喂蛋糕 |
+| `🍰日历` | 查看娅娅本月日历 |
+| `🍰报告` / `🍰分析 [MM\|YYYY]` | 本月/指定月份或年份投喂报告 |
+| `🍰生涯` | 投喂生涯档案 |
+| `🍰补签 DD [次数]` | 补签某天 |
+| `🍰榜 [页码]` | 查看排行榜 |
+| `🍰成就` | 查看成就墙 |
+| `🍰重置榜单` | 管理员重置今日计数 |
+| `🍰帮助` | 查看帮助 |
+
+## 配置
+
+管理面板「插件管理 → 插件名 → 配置」：
+
+| 配置项 | 类型 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| group_whitelist | list | [] | 群白名单，不填全群可用 |
+| user_blacklist | list | [] | 用户黑名单 |
+| day_start_time | string | 00:00 | 每天开始时间 |
+| auto_delete_last_month_data | bool | true | 自动清理旧数据 |
+| daily_max_checkins | int | 0 | 每日最多喂蛋糕数，0 无限制 |
+| monthly_max_checkins | int | 0 | 每月最多喂蛋糕数，0 无限制 |
+| ranking_display_count | int | 10 | 排行每页人数 |
+| llm_enabled | bool | true | LLM 对话总开关 |
+| llm_trigger_probability | float | 0.3 | LLM 触发概率 |
+| llm_daily_min_cakes | int | 3 | 当日喂满几块才可触发 LLM |
+| llm_daily_limit | int | 5 | 全群每日 LLM 触发上限 |
+
+## 依赖
+
+无第三方依赖（AstrBot 自带 aiosqlite 与 Pillow）。将娅娅立绘图命名为 `denia.png` 放入插件目录，排行榜图顶部会自动显示。
 
 ## 致谢
 
-基于 [astrbot_plugin_deer_check v3](https://github.com/DITF16/astrbot_plugin_deer_check)（DITF16&Foolllll）改造，单系统化并新增成就与 LLM 对话。
+基于 [astrbot_plugin_deer_check v3](https://github.com/DITF16/astrbot_plugin_deer_check)（DITF16&Foolllll）改造：单系统化，并新增成就系统与 LLM 概率对话。

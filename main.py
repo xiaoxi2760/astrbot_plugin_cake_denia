@@ -102,7 +102,7 @@ class CakeDeniaPlugin(Star):
         self.llm_daily_min_cakes = int(config.get("llm_daily_min_cakes", 3))
         self.llm_daily_limit = int(config.get("llm_daily_limit", 5))
 
-        data_dir = StarTools.get_data_dir("cake_denia")
+        data_dir = StarTools.get_data_dir("astrbot_plugin_cake_denia")
         plugin_dir = os.path.dirname(os.path.abspath(__file__))
 
         self.db_path = os.path.join(data_dir, DB_NAME)
