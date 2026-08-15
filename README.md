@@ -18,6 +18,10 @@
 - 🍰重置榜单：管理员重置今日计数（可@他人）
 - 🍰帮助：查看帮助
 
+## 效果预览
+
+![娅娅投喂日历](assets/calendar-preview.png)
+
 ## 安装
 
 将插件目录 `astrbot_plugin_cake_denia` 放入 AstrBot 的 `data/plugins/`，在管理面板「插件管理」中启用；或将插件目录打包为 zip 后在「插件管理」页面上传安装。
