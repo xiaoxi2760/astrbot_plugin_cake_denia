@@ -78,6 +78,8 @@ class CakeCore:
             self.calendar_renderer = self._pil_renderer
         # 达妮娅（暗夜·black-1）彩蛋渲染器：懒加载，仅在彩蛋触发时使用
         self._dark_renderer = None
+        # 达妮娅暗夜主题的 PIL 渲染器：HTML 后端失败降级时用（始终纯 PIL，不碰 Playwright）
+        self._dark_pil_renderer = None
 
     def _get_dark_renderer(self):
         """达妮娅暗夜渲染器：black-1 主题，用于达妮娅彩蛋日历（与配置主题无关）。"""
@@ -91,6 +93,14 @@ class CakeCore:
             else:
                 self._dark_renderer = PilCalendarRenderer(self, dark_theme)
         return self._dark_renderer
+
+    def _get_dark_pil_renderer(self):
+        """达妮娅暗夜主题的 PIL 渲染器（HTML 后端降级专用，不触发 Playwright）。"""
+        if self._dark_pil_renderer is None:
+            from .theme import load_theme
+            from .render_pil.calendar import PilCalendarRenderer
+            self._dark_pil_renderer = PilCalendarRenderer(self, load_theme('black-1'))
+        return self._dark_pil_renderer
 
     def _init_fonts(self):
         """扫描字体候选并初始化（可重复调用以重载下载后的字体）。"""
@@ -665,7 +675,7 @@ class CakeCore:
                                       and current_month == date.today().month) else 0)
         avatar_path = await self._save_qq_avatar(event, user_id, dark)
         renderer = self._get_dark_renderer() if dark else self.calendar_renderer
-        pil_fallback = self._get_dark_renderer() if dark else self._pil_renderer
+        pil_fallback = self._get_dark_pil_renderer() if dark else self._pil_renderer
         try:
             image_path = await asyncio.to_thread(
                 renderer.render,
