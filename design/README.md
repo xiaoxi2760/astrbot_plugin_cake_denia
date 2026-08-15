@@ -4,8 +4,7 @@
 
 > 状态：**设计定稿基线**（后续在此之上迭代微调）
 > 渲染方式：HTML/CSS + Playwright + 系统 Chrome
-
-效果图见同目录 `A1-泡泡初绽.png`（1200×1080，2x 截图）。
+> 效果图：`design/render_out/A1-泡泡初绽-v3.png`（1200×1080，2x 截图，不入库）
 
 ---
 
@@ -99,6 +98,5 @@ py astrbot_plugin_cake_denia/design/make_calendar_html.py
 
 ## 五、相关文件
 
-- `design/A1-泡泡初绽.png` — 当前定稿效果图
 - `design/make_calendar_html.py` — 渲染脚本（唯一修改入口）
 - 插件实现：`cake_core.py` `_create_calendar_image`（待按定稿方案重写）
