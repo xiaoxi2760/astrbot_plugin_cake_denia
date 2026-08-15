@@ -6,6 +6,7 @@
 渲染失败由上层降级到 PIL。
 """
 import calendar
+import concurrent.futures
 import html
 import os
 import threading
@@ -16,8 +17,11 @@ from pathlib import Path
 from ..resources.texts import CALENDAR_SUMMARY
 
 # ---------------------------------------------------------------- 浏览器复用
-# 每次渲染冷启动 Playwright 开销大（1~2s），这里缓存一个 browser 实例。
-# 所有渲染经 _render_lock 串行，保证同一时刻只有单线程接触 browser（Playwright sync API 非线程安全）。
+# Playwright Sync API 与 greenlet 线程绑定：asyncio.to_thread 的线程池可能把同一
+# browser 实例交给不同线程复用 → "无法切换到不同的线程"。这里把所有 Playwright 渲染
+# 汇聚到单线程执行器，保证浏览器实例始终被同一线程访问，复用提速与线程安全兼得。
+_RENDER_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
+    max_workers=1, thread_name_prefix='cake-html-render')
 _render_lock = threading.Lock()
 _browser = None
 _playwright = None
@@ -58,6 +62,30 @@ def _get_browser(launch_args):
     except Exception:
         _browser = _playwright.chromium.launch(args=launch_args)
     return _browser
+
+
+def _render_playwright(launch_args, html_path, out_png):
+    """在单线程执行器内执行截图（必须在 _RENDER_EXECUTOR 线程调用）。"""
+    with _render_lock:
+        browser = _get_browser(launch_args)
+        page = browser.new_page(viewport={'width': 600, 'height': 540},
+                                device_scale_factor=2)
+        try:
+            page.goto(Path(html_path).resolve().as_uri())
+            page.wait_for_timeout(300)
+            page.screenshot(path=out_png)
+        finally:
+            page.close()
+    return out_png
+
+
+def _shutdown_html_renderer():
+    """插件卸载时回收浏览器并关闭渲染线程（在渲染线程内执行关闭，避免跨线程）。"""
+    try:
+        _RENDER_EXECUTOR.submit(_close_browser).result(timeout=30)
+    except Exception:
+        pass
+    _RENDER_EXECUTOR.shutdown(wait=True)
 
 # ---------------------------------------------------------------- CSS（颜色走 CSS 变量）
 _CSS = '''
@@ -283,20 +311,15 @@ body {{ position: relative; }}
         is_root = getattr(os, 'geteuid', lambda: 1)() == 0
         launch_args = ['--no-sandbox'] if is_root else []
         try:
-            with _render_lock:
-                browser = _get_browser(launch_args)
-                page = browser.new_page(viewport={'width': 600, 'height': 540},
-                                        device_scale_factor=2)
-                try:
-                    page.goto(Path(html_path).resolve().as_uri())
-                    page.wait_for_timeout(300)
-                    page.screenshot(path=out_png)
-                finally:
-                    page.close()
+            _RENDER_EXECUTOR.submit(
+                _render_playwright, launch_args, html_path, out_png).result(timeout=120)
             return out_png
         except Exception:
-            # 浏览器可能已崩溃，重置以便下次重建
-            _close_browser()
+            # 浏览器可能已崩溃，重置以便下次重建（在渲染线程内执行，避免跨线程）
+            try:
+                _RENDER_EXECUTOR.submit(_close_browser).result(timeout=30)
+            except Exception:
+                pass
             raise
         finally:
             try:

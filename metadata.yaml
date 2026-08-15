@@ -16,7 +16,7 @@ desc: |
   - 🤖 LLM 概率对话：喂到一定数量后娅娅会用 LLM 撒娇回应（可配置概率与次数限制）
   - 群白名单、用户黑名单、每日/每月上限等均可配置
   - 🔧 排行榜头像（QQ）、重置权限（群管理）、HTML 转义等稳定性修复
-version: 1.0.1
+version: 1.0.2
 author: xiaoxi2760
 repo: https://github.com/xiaoxi2760/astrbot_plugin_cake_denia
 astrbot_version: ">=4.5.7"

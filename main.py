@@ -196,8 +196,8 @@ class CakeDeniaPlugin(Star):
     async def _close_html_browser(self, metadata=None):
         """插件卸载/热重载时回收 HTML 渲染器的浏览器进程（AstrBot on_plugin_unloaded 事件）。"""
         try:
-            from .render_html.calendar import _close_browser
-            _close_browser()
+            from .render_html.calendar import _shutdown_html_renderer
+            _shutdown_html_renderer()
         except Exception:
             pass
 
