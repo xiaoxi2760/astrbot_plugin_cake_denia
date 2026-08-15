@@ -197,7 +197,8 @@ class CakeDeniaPlugin(Star):
         """插件卸载/热重载时回收 HTML 渲染器的浏览器进程（AstrBot on_plugin_unloaded 事件）。"""
         try:
             from .render_html.calendar import _shutdown_html_renderer
-            _shutdown_html_renderer()
+            # 卸载清理在 worker 线程执行，避免阻塞事件循环（内部含 30s 上限的关闭等待）
+            await asyncio.to_thread(_shutdown_html_renderer)
         except Exception:
             pass
 

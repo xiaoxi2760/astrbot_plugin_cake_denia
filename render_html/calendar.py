@@ -20,11 +20,31 @@ from ..resources.texts import CALENDAR_SUMMARY
 # Playwright Sync API 与 greenlet 线程绑定：asyncio.to_thread 的线程池可能把同一
 # browser 实例交给不同线程复用 → "无法切换到不同的线程"。这里把所有 Playwright 渲染
 # 汇聚到单线程执行器，保证浏览器实例始终被同一线程访问，复用提速与线程安全兼得。
-_RENDER_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
-    max_workers=1, thread_name_prefix='cake-html-render')
+_RENDER_EXECUTOR = None
+_render_executor_lock = threading.Lock()
 _render_lock = threading.Lock()
 _browser = None
 _playwright = None
+
+
+def _get_render_executor():
+    """返回渲染专用单线程执行器；被 shutdown（插件停用/热重载）后惰性重建。"""
+    global _RENDER_EXECUTOR
+    with _render_executor_lock:
+        if _RENDER_EXECUTOR is None or getattr(_RENDER_EXECUTOR, '_shutdown', False):
+            _RENDER_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
+                max_workers=1, thread_name_prefix='cake-html-render')
+        return _RENDER_EXECUTOR
+
+
+def _submit_render_task(fn, *args):
+    """把 Playwright 任务提交到单线程执行器（若执行器已被 shutdown 则先重建）。"""
+    try:
+        return _get_render_executor().submit(fn, *args)
+    except RuntimeError:
+        with _render_executor_lock:
+            _RENDER_EXECUTOR = None
+        return _get_render_executor().submit(fn, *args)
 
 
 def _close_browser():
@@ -80,12 +100,21 @@ def _render_playwright(launch_args, html_path, out_png):
 
 
 def _shutdown_html_renderer():
-    """插件卸载时回收浏览器并关闭渲染线程（在渲染线程内执行关闭，避免跨线程）。"""
-    try:
-        _RENDER_EXECUTOR.submit(_close_browser).result(timeout=30)
-    except Exception:
-        pass
-    _RENDER_EXECUTOR.shutdown(wait=True)
+    """插件卸载时回收浏览器并关闭渲染线程；之后再次渲染会惰性重建执行器。"""
+    global _RENDER_EXECUTOR
+    with _render_executor_lock:
+        ex = _RENDER_EXECUTOR
+    if ex is not None:
+        try:
+            ex.submit(_close_browser).result(timeout=30)
+        except Exception:
+            pass
+        try:
+            ex.shutdown(wait=True)
+        except Exception:
+            pass
+    with _render_executor_lock:
+        _RENDER_EXECUTOR = None
 
 # ---------------------------------------------------------------- CSS（颜色走 CSS 变量）
 _CSS = '''
@@ -311,13 +340,13 @@ body {{ position: relative; }}
         is_root = getattr(os, 'geteuid', lambda: 1)() == 0
         launch_args = ['--no-sandbox'] if is_root else []
         try:
-            _RENDER_EXECUTOR.submit(
+            _submit_render_task(
                 _render_playwright, launch_args, html_path, out_png).result(timeout=120)
             return out_png
         except Exception:
             # 浏览器可能已崩溃，重置以便下次重建（在渲染线程内执行，避免跨线程）
             try:
-                _RENDER_EXECUTOR.submit(_close_browser).result(timeout=30)
+                _submit_render_task(_close_browser).result(timeout=30)
             except Exception:
                 pass
             raise
