@@ -1,16 +1,35 @@
-"""cake_core：娅娅喂蛋糕插件的图片渲染与数据查询核心。
+"""cake_core：今天你喂娅娅小蛋糕了吗 —— 图片渲染与数据查询核心。
 
-改造自 deer_core：粉色系主题、🍰 蛋糕标记、娅娅文案。
+粉色系主题、🍰 蛋糕标记、娅娅文案，双渲染后端（PIL / HTML）。
 """
 import aiosqlite
 import calendar
 import os
 import io
+import re
 import time
 import asyncio
 from datetime import date, datetime, timedelta
 from PIL import Image, ImageDraw, ImageFont
 from astrbot.api import logger
+
+from .resources.texts import (
+    CALENDAR_EMPTY, CALENDAR_ERROR, CALENDAR_FONT_MISSING,
+    CALENDAR_SERVER_FONT_MISSING, CALENDAR_UNKNOWN_ERROR,
+    MONTHLY_TOP, MONTHLY_PEAK_GE3, MONTHLY_PEAK_2,
+    MONTHLY_STREAK_GE7, MONTHLY_STREAK_GE4, MONTHLY_STREAK_GE2, MONTHLY_RATE,
+    MONTHLY_YAYA_GE13, MONTHLY_YAYA_GE07, MONTHLY_YAYA_GE04,
+    MONTHLY_YAYA_GE01, MONTHLY_YAYA_LOW, MONTHLY_TIP,
+    YEARLY_TOP, YEARLY_MAX_MONTH, YEARLY_RATE_GT25, YEARLY_RATE_GT15,
+    YEARLY_RATE_GT8, YEARLY_RATE_LOW, YEARLY_END, ANALYSIS_HEADER,
+    CAREER_TITLE, CAREER_FEEDER, CAREER_QUOTE, CAREER_SECTIONS,
+    CAREER_FIRST, CAREER_AVG_DAILY, CAREER_AVG_INTERVAL, CAREER_AVG_ZERO,
+    CAREER_TOTAL, CAREER_DAYS, CAREER_MAX_DAY, CAREER_MAX_MONTH,
+    CAREER_MIN_MONTH, CAREER_REST, CAREER_STATUS, CAREER_COMMENT_WRAP,
+    RANKING_TITLE, RANKING_SUBTITLE, RANKING_TODAY, RANKING_MONTH,
+    RANKING_COL_SELF, RANKING_COL_RECEIVED, RANKING_COL_HELP,
+    RANKING_PAGE, RANKING_PAGE_LAST,
+)
 
 # 娅娅主题色（粉色系）
 PINK = (255, 182, 193)        # 浅粉
@@ -36,13 +55,42 @@ class CakeCore:
         '/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf',
     ]
 
-    def __init__(self, font_path: str, db_path: str, temp_dir: str):
+    def __init__(self, font_path: str, db_path: str, temp_dir: str, render_backend: str = "pil",
+                 theme_preset: str = "custom"):
         self._plugin_dir = os.path.dirname(font_path) if font_path else os.getcwd()
         self.font_path = None
         self.db_path = db_path
         self.temp_dir = temp_dir
         self._emoji_font = None
         self._init_fonts()
+        # 日历渲染后端：pil（默认，无额外依赖）/ html（Playwright + 系统 Chrome）
+        self.render_backend = render_backend if render_backend in ("pil", "html") else "pil"
+        # 日历主题：预设 white-1/white-2/black-1/black-2 或 custom（读 resources/theme.json）
+        from .theme import load_theme
+        self.theme_preset = theme_preset
+        self.theme = load_theme(theme_preset)
+        from .render_pil.calendar import PilCalendarRenderer
+        self._pil_renderer = PilCalendarRenderer(self, self.theme)
+        if self.render_backend == "html":
+            from .render_html.calendar import HtmlCalendarRenderer
+            self.calendar_renderer = HtmlCalendarRenderer(self, self.theme)
+        else:
+            self.calendar_renderer = self._pil_renderer
+        # 达妮娅（暗夜·black-1）彩蛋渲染器：懒加载，仅在彩蛋触发时使用
+        self._dark_renderer = None
+
+    def _get_dark_renderer(self):
+        """达妮娅暗夜渲染器：black-1 主题，用于达妮娅彩蛋日历（与配置主题无关）。"""
+        if self._dark_renderer is None:
+            from .theme import load_theme
+            dark_theme = load_theme('black-1')
+            from .render_pil.calendar import PilCalendarRenderer
+            if self.render_backend == "html":
+                from .render_html.calendar import HtmlCalendarRenderer
+                self._dark_renderer = HtmlCalendarRenderer(self, dark_theme)
+            else:
+                self._dark_renderer = PilCalendarRenderer(self, dark_theme)
+        return self._dark_renderer
 
     def _init_fonts(self):
         """扫描字体候选并初始化（可重复调用以重载下载后的字体）。"""
@@ -183,26 +231,6 @@ class CakeCore:
                     draw.text((cx, cy), c, font=f, fill=fill, anchor="la")
                 cx += draw.textlength(c, font=f)
 
-    def _load_avatar(self, qq_id: str, size: int = 40):
-        """QQ 头像（圆形裁剪），失败返回 None。"""
-        import urllib.request
-        url = f"https://q1.qlogo.cn/g?b=qq&nk={qq_id}&s=640"
-        try:
-            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-            with urllib.request.urlopen(req, timeout=5) as resp:
-                data = resp.read()
-            img = Image.open(io.BytesIO(data)).convert("RGBA")
-            img = img.resize((size, size))
-            mask = Image.new("L", (size, size), 0)
-            mask_draw = ImageDraw.Draw(mask)
-            mask_draw.ellipse((0, 0, size, size), fill=255)
-            result = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-            result.paste(img, (0, 0), mask)
-            return result
-        except Exception as e:
-            logger.error(f"加载头像 {qq_id} 失败: {e}")
-            return None
-
     async def _get_group_members(self, event, group_id: str) -> list:
         try:
             if event.get_platform_name() == "aiocqhttp":
@@ -260,103 +288,6 @@ class CakeCore:
                 draw.text((xy[0] + size / 2 - w / 2, xy[1]), CAKE_EMOJI, font=ef, fill=(0, 0, 0, 0), embedded_color=True)
         except Exception:
             pass
-
-    def _create_calendar_image(self, user_id: str, user_name: str, year: int, month: int,
-                                checkin_data: dict, total_cakes: int, avatar_path: str = None) -> str:
-        WIDTH, HEIGHT = 600, 531
-        BG_COLOR = PINK_BG
-        HEADER_COLOR = CHOCO
-        WEEKDAY_COLOR = (150, 120, 130)
-        DAY_COLOR = (90, 70, 80)
-        TODAY_BG_COLOR = (255, 228, 235)
-
-        font_title = ImageFont.truetype(self.font_path, 26)
-        font_subtitle = ImageFont.truetype(self.font_path, 15)
-        font_weekday = ImageFont.truetype(self.font_path, 18)
-        font_day = ImageFont.truetype(self.font_path, 20)
-        font_cake_count = ImageFont.truetype(self.font_path, 16)
-        font_summary = ImageFont.truetype(self.font_path, 18)
-
-        img = Image.new("RGB", (WIDTH, HEIGHT), BG_COLOR)
-        draw = ImageDraw.Draw(img)
-
-        # 左上角 QQ 头像
-        if avatar_path and os.path.exists(avatar_path):
-            try:
-                av = Image.open(avatar_path).convert("RGBA")
-                av = av.resize((40, 40))
-                mask = Image.new("L", (40, 40), 0)
-                ImageDraw.Draw(mask).ellipse((0, 0, 40, 40), fill=255)
-                av_rgba = Image.new("RGBA", (40, 40), (0, 0, 0, 0))
-                av_rgba.paste(av, (0, 0), mask)
-                img.paste(av_rgba, (15, 15), av_rgba)
-            except Exception:
-                pass
-
-        # 主标题："{用户名}的投喂日历" 居中，超长截断（不再不显示）
-        title_text = f"{user_name}的投喂日历"
-        max_title_w = WIDTH - 150
-        if self._measure_text_width(draw, title_text, font_title) > max_title_w:
-            truncated = self._truncate_text(draw, title_text, font_title, max_title_w)
-            if truncated:
-                title_text = truncated
-        self._draw_text(draw, (WIDTH / 2, 28), title_text, font=font_title, fill=HEADER_COLOR, anchor="mm")
-
-        # 副标题：年月日（小字号，不再用大标题）
-        subtitle = f"{year}年{month}月"
-        self._draw_text(draw, (WIDTH / 2, 58), subtitle, font=font_subtitle, fill=WEEKDAY_COLOR, anchor="mm")
-
-        weekdays = ["一", "二", "三", "四", "五", "六", "日"]
-        cell_width = WIDTH / 7
-        for i, day in enumerate(weekdays):
-            draw.text((i * cell_width + cell_width / 2, 82), day, font=font_weekday, fill=WEEKDAY_COLOR, anchor="mm")
-
-        cal = calendar.monthcalendar(year, month)
-        y_offset = 112
-        cell_height = 65
-        today_num = date.today().day if date.today().year == year and date.today().month == month else 0
-
-        # 投喂日 emoji 图标字体（🍰），不可用时回退红色勾
-        cake_emoji_font = None
-        if self._emoji_available():
-            try:
-                ep = getattr(self, '_emoji_path', None)
-                if ep and os.path.exists(ep):
-                    cake_emoji_font = ImageFont.truetype(ep, 32)
-            except Exception:
-                cake_emoji_font = None
-
-        for week in cal:
-            for i, day_num in enumerate(week):
-                if day_num == 0:
-                    continue
-                x_pos = i * cell_width
-                if day_num == today_num:
-                    draw.rectangle([x_pos, y_offset, x_pos + cell_width, y_offset + cell_height], fill=TODAY_BG_COLOR)
-
-                draw.text((x_pos + cell_width / 2, y_offset + cell_height / 2 - 20), str(day_num), font=font_day, fill=DAY_COLOR, anchor="mm")
-
-                if day_num in checkin_data:
-                    cx = x_pos + cell_width / 2
-                    cy = y_offset + cell_height / 2 + 9
-                    if cake_emoji_font is not None:
-                        # 投喂日覆盖 🍰 图标
-                        draw.text((cx, cy), CAKE_EMOJI, font=cake_emoji_font, anchor="mm", embedded_color=True)
-                    else:
-                        draw.line(
-                            [(cx - 13, cy), (cx - 5, cy + 8), (cx + 14, cy - 9)],
-                            fill=CAKE_RED, width=4, joint="curve")
-                    count = checkin_data[day_num]
-                    draw.text((x_pos + cell_width - 5, y_offset + cell_height - 5), str(count), font=font_cake_count, fill=CAKE_RED, anchor="rd")
-            y_offset += cell_height
-
-        total_days = len(checkin_data)
-        summary_text = f"本月投喂娅娅 {total_days} 天，共 {total_cakes} 块蛋糕"
-        self._draw_text(draw, (WIDTH / 2, HEIGHT - 25), summary_text, font=font_summary, fill=HEADER_COLOR, anchor="mm")
-
-        file_path = os.path.join(self.temp_dir, f"cake_{user_id}_{int(time.time())}.png")
-        img.save(file_path, format='PNG')
-        return file_path
 
     async def _get_user_period_data(self, user_id: str, year: int, month: int) -> dict:
         period_data = {}
@@ -417,30 +348,30 @@ class CakeCore:
         checkin_rate = total_days / analysis_days if analysis_days > 0 else 0
         freq_per_day = total_cakes / analysis_days if analysis_days > 0 else 0
 
-        report = f"这个月你给娅娅喂了 {total_days} 天的蛋糕，一共 {total_cakes} 块！\n"
+        report = MONTHLY_TOP.format(total_days=total_days, total_cakes=total_cakes) + "\n"
         if max_day_count > 1:
             if max_day_count >= 3:
-                report += f"最猛的一天是 {max_day_num} 日，一口气喂了 {max_day_count} 块，娅娅的小肚子都圆了一圈～\n"
+                report += MONTHLY_PEAK_GE3.format(day=max_day_num, count=max_day_count) + "\n"
             elif max_day_count == 2:
-                report += f"{max_day_num} 日双蛋糕投喂，娅娅开心得转圈圈！\n"
+                report += MONTHLY_PEAK_2.format(day=max_day_num) + "\n"
         if max_consecutive >= 7:
-            report += f"最长连续投喂 {max_consecutive} 天！娅娅说这是她吃过最幸福的蛋糕～\n"
+            report += MONTHLY_STREAK_GE7.format(n=max_consecutive) + "\n"
         elif max_consecutive >= 4:
-            report += f"最长连续投喂 {max_consecutive} 天，娅娅已经习惯每天等你投喂啦～\n"
+            report += MONTHLY_STREAK_GE4.format(n=max_consecutive) + "\n"
         elif max_consecutive >= 2:
-            report += f"最长连续投喂 {max_consecutive} 天，小小的坚持也很甜！\n"
-        report += f"本月投喂率：{checkin_rate:.1%}\n\n"
+            report += MONTHLY_STREAK_GE2.format(n=max_consecutive) + "\n"
+        report += MONTHLY_RATE.format(rate=f"{checkin_rate:.1%}") + "\n\n"
         if freq_per_day >= 1.3:
-            report += "娅娅：每天都有小蛋糕……泡泡都跟着飘起来了。\n不过吃太多会胖的，娅娅可不想动。"
+            report += MONTHLY_YAYA_GE13
         elif freq_per_day >= 0.7:
-            report += "娅娅：有蛋糕、有热闹看、还有人陪着……这样的日子，好像也不错。"
+            report += MONTHLY_YAYA_GE07
         elif freq_per_day >= 0.4:
-            report += "娅娅：甜丝丝的，像泡泡轻轻飘过脸颊。继续保持就好。"
+            report += MONTHLY_YAYA_GE04
         elif freq_per_day >= 0.1:
-            report += "娅娅：偶尔的小甜头也不错，娅娅懒懒地等着下一次投喂～"
+            report += MONTHLY_YAYA_GE01
         else:
-            report += "娅娅：这个月的蛋糕有点少呢…\n没关系，娅娅打盹的时候会梦到它们的。"
-        report += "\n\n小贴士：甜食要适度，娅娅更想每天都见到你～"
+            report += MONTHLY_YAYA_LOW
+        report += MONTHLY_TIP
         return report, checkin_rate
 
     async def _generate_yearly_analysis_report(self, user_name: str, year: int, yearly_data: dict) -> str:
@@ -452,19 +383,26 @@ class CakeCore:
         max_month = max(yearly_data.items(), key=lambda x: sum(x[1].values()))
         max_month_num, max_data = max_month
         max_month_cakes = sum(max_data.values())
-        report = f"这一年你喂了娅娅 {total_months} 个月、{total_days} 天的蛋糕，一共 {total_cakes} 块！\n"
-        report += f"最宠娅娅的月份：{max_month_num}月，当月喂了 {max_month_cakes} 块，娅娅都记在心里呢～\n\n"
-        avg_per_month = total_cakes / 12
+        report = YEARLY_TOP.format(months=total_months, days=total_days, cakes=total_cakes) + "\n"
+        report += YEARLY_MAX_MONTH.format(month=max_month_num, cakes=max_month_cakes) + "\n\n"
+        avg_per_month = total_cakes / max(total_months, 1)
         if avg_per_month > 25:
-            report += "年度评价：阿列夫级的甜蜜投喂！\n全年无休，娅娅的泡泡都快装不下了。"
+            report += YEARLY_RATE_GT25
         elif avg_per_month > 15:
-            report += "年度评价：虚质学部金牌投喂员！\n稳定输出甜蜜，娅娅很满意。"
+            report += YEARLY_RATE_GT15
         elif avg_per_month > 8:
-            report += "年度评价：贴心蛋糕师！\n有节制有甜蜜，娅娅觉得刚刚好～"
+            report += YEARLY_RATE_GT8
         else:
-            report += "年度评价：娅娅的好朋友！\n虽然蛋糕不多，但娅娅知道你是真心喜欢她的～"
-        report += "\n\n新的一年，娅娅还会在学院门口懒懒地等你来投喂～"
+            report += YEARLY_RATE_LOW
+        report += YEARLY_END
         return report
+
+    @staticmethod
+    def _safe_file_component(name: str) -> str:
+        """把昵称/期间变为安全的文件名片段，防止非法字符与路径穿越。"""
+        safe = re.sub(r'[\\/:*?"<>|\x00-\x1f]', '_', name)
+        safe = safe.strip().strip('.')
+        return safe or 'unnamed'
 
     def _create_analysis_image(self, user_name: str, target_period: str, analysis_result: str,
                                checkin_rate: float = 0.0, system_name: str = "蛋糕") -> str:
@@ -483,7 +421,7 @@ class CakeCore:
         font_content = ImageFont.truetype(self.font_path, 22)
         img = Image.new('RGB', (WIDTH, HEIGHT), BG_COLOR)
         draw = ImageDraw.Draw(img)
-        header_text = f"{target_period} {user_name}的娅娅投喂报告"
+        header_text = ANALYSIS_HEADER.format(period=target_period, name=user_name)
         header_bbox = draw.textbbox((0, 0), header_text, font=font_header)
         header_width = header_bbox[2] - header_bbox[0]
         draw.text(((WIDTH - header_width) // 2, 40), header_text, font=font_header, fill=HEADER_COLOR)
@@ -500,8 +438,9 @@ class CakeCore:
             x_pos = (WIDTH - text_width) // 2
             draw.text((x_pos, y_offset), line, font=font_content, fill=TEXT_COLOR)
             y_offset += line_height
-        safe_period = target_period.replace('年', '_').replace('月', '')
-        file_path = os.path.join(self.temp_dir, f"analysis_{user_name}_{safe_period}_{int(time.time())}.png")
+        safe_user = self._safe_file_component(user_name)
+        safe_period = self._safe_file_component(target_period.replace('年', '_').replace('月', ''))
+        file_path = os.path.join(self.temp_dir, f"analysis_{safe_user}_{safe_period}_{int(time.time())}.png")
         img.save(file_path, format='PNG')
         return file_path
 
@@ -524,11 +463,13 @@ class CakeCore:
         font_text = ImageFont.truetype(self.font_path, 24)
         font_comment = ImageFont.truetype(self.font_path, 20)
         y_pos = 50
-        draw.text((WIDTH / 2, y_pos), "娅娅喂蛋糕生涯档案", font=font_title, fill=TITLE_COLOR, anchor="mm")
+        draw.text((WIDTH / 2, y_pos), CAREER_TITLE, font=font_title, fill=TITLE_COLOR, anchor="mm")
         y_pos += 50
-        draw.text((WIDTH / 2, y_pos), f"投喂员：{user_name}", font=font_subtitle, fill=SUBTITLE_COLOR, anchor="mm")
+        draw.text((WIDTH / 2, y_pos), CAREER_FEEDER.format(name=user_name),
+                  font=font_subtitle, fill=SUBTITLE_COLOR, anchor="mm")
         y_pos += 40
-        draw.text((WIDTH / 2, y_pos), f"“{stats['summary_comment']}”", font=font_section_title, fill=HIGHLIGHT_COLOR, anchor="mm")
+        draw.text((WIDTH / 2, y_pos), CAREER_QUOTE.format(comment=stats['summary_comment']),
+                  font=font_section_title, fill=HIGHLIGHT_COLOR, anchor="mm")
         y_pos += 60
 
         def draw_section(title, lines, start_y):
@@ -552,39 +493,46 @@ class CakeCore:
                 current_y += offset
             return start_y + section_height + 30
 
-        lines = [{'text': f"{stats['first_date_str']} (距今 {stats['total_span_days']} 天)"}]
-        y_pos = draw_section("甜蜜起点", lines, y_pos)
+        lines = [{'text': CAREER_FIRST.format(date=stats['first_date_str'],
+                                              days=stats['total_span_days'])}]
+        y_pos = draw_section(CAREER_SECTIONS[0], lines, y_pos)
         avg_display = ""
         if stats['daily_avg'] > 1:
-            avg_display = f"日均投喂：{stats['daily_avg']:.2f} 块"
+            avg_display = CAREER_AVG_DAILY.format(avg=f"{stats['daily_avg']:.2f}")
         elif stats['daily_avg'] > 0:
             interval = 1 / stats['daily_avg']
-            avg_display = f"平均频率：每 {interval:.1f} 天 1 块"
+            avg_display = CAREER_AVG_INTERVAL.format(interval=f"{interval:.1f}")
         else:
-            avg_display = "日均投喂：0 块"
+            avg_display = CAREER_AVG_ZERO
         lines = [
-            {'text': f"累计投喂：{stats['total_count']} 块"},
-            {'text': f"投喂天数：{stats['total_days']} 天 (占比 {stats['active_ratio']:.1f}%)"},
+            {'text': CAREER_TOTAL.format(count=stats['total_count'])},
+            {'text': CAREER_DAYS.format(days=stats['total_days'],
+                                        ratio=f"{stats['active_ratio']:.1f}%")},
             {'text': avg_display}
         ]
-        y_pos = draw_section("甜蜜战绩", lines, y_pos)
+        y_pos = draw_section(CAREER_SECTIONS[1], lines, y_pos)
         lines = []
         if stats['max_day_count'] > 1:
-            lines.append({'text': f"单日之最：{stats['max_day_date']} ({stats['max_day_count']} 块)"})
+            lines.append({'text': CAREER_MAX_DAY.format(
+                date=stats['max_day_date'], count=stats['max_day_count'])})
         if stats['max_month_count'] > 0:
-            lines.append({'text': f"月度之最：{stats['max_month_str']} ({stats['max_month_count']} 块)"})
-        y_pos = draw_section("巅峰时刻", lines, y_pos)
+            lines.append({'text': CAREER_MAX_MONTH.format(
+                month=stats['max_month_str'], count=stats['max_month_count'])})
+        y_pos = draw_section(CAREER_SECTIONS[2], lines, y_pos)
         lines = [
-            {'text': f"最少月份：{stats['min_month_str']} ({stats['min_month_count']} 块)"},
-            {'text': f"最长断喂：{stats['rest_period_str']}"}
+            {'text': CAREER_MIN_MONTH.format(month=stats['min_month_str'],
+                                             count=stats['min_month_count'])},
+            {'text': CAREER_REST.format(text=stats['rest_period_str'])}
         ]
         if stats['sage_comment']:
-            lines.append({'text': f"({stats['sage_comment']})", 'is_comment': True})
-        y_pos = draw_section("思念时期", lines, y_pos)
-        lines = [{'text': f"距离上次：Day {stats['status_day']}"}]
+            lines.append({'text': CAREER_COMMENT_WRAP.format(text=stats['sage_comment']),
+                          'is_comment': True})
+        y_pos = draw_section(CAREER_SECTIONS[3], lines, y_pos)
+        lines = [{'text': CAREER_STATUS.format(days=stats['status_day'])}]
         if stats['status_comment']:
-            lines.append({'text': f"({stats['status_comment']})", 'is_comment': True})
-        y_pos = draw_section("当前状态", lines, y_pos)
+            lines.append({'text': CAREER_COMMENT_WRAP.format(text=stats['status_comment']),
+                          'is_comment': True})
+        y_pos = draw_section(CAREER_SECTIONS[4], lines, y_pos)
         file_path = os.path.join(self.temp_dir, f"career_{int(time.time())}.png")
         img.save(file_path)
         return file_path
@@ -635,8 +583,43 @@ class CakeCore:
             return True
         return os.path.exists(os.path.join(self._plugin_dir, 'resources', 'fonts', 'emoji.ttf'))
 
+    def _download_avatar_sync(self, qq_id: str, save_path: str) -> bool:
+        """同步下载 QQ 头像到临时文件（由调用方 to_thread 包装，避免阻塞事件循环）。"""
+        import urllib.request
+        url = f"https://q1.qlogo.cn/g?b=qq&nk={qq_id}&s=640"
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                data = resp.read()
+            if data:
+                with open(save_path, 'wb') as f:
+                    f.write(data)
+                return True
+        except Exception as e:
+            logger.error(f"下载头像 {qq_id} 失败: {e}")
+        return False
+
+    async def _save_qq_avatar(self, event, user_id: str, dark: bool = False) -> str:
+        """按平台与主题开关下载头像到临时文件，失败返回空串。
+
+        仅 QQ 平台且当前渲染主题开启 show_avatar 时才下载；网络请求走 to_thread。
+        """
+        try:
+            if event.get_platform_name() != "aiocqhttp":
+                return ""
+        except Exception:
+            return ""
+        renderer = self._get_dark_renderer() if dark else self.calendar_renderer
+        if not getattr(renderer, '_show_avatar', True):
+            return ""
+        save_path = os.path.join(self.temp_dir, f"avatar_{user_id}.png")
+        ok = await asyncio.to_thread(self._download_avatar_sync, user_id, save_path)
+        return save_path if ok else ""
+
     async def _generate_and_send_calendar(self, event, user_id: str, user_name: str,
-                                          db_path: str, adjusted_date_str: str = None):
+                                          db_path: str, adjusted_date_str: str = None,
+                                          dark: bool = False):
+        """生成日历图。dark=True 时用达妮娅暗夜主题（black-1）渲染。"""
         if adjusted_date_str:
             current_year = int(adjusted_date_str[:4])
             current_month = int(adjusted_date_str[5:7])
@@ -669,34 +652,44 @@ class CakeCore:
                     checkin_records[day] = checkin_records.get(day, 0) + row[1]
                     total_cakes_this_month += row[1]
                 if not checkin_records:
-                    return '这个月还没有喂娅娅蛋糕哦，发送"🍰"给娅娅喂第一块小蛋糕吧！', None, False
+                    return CALENDAR_EMPTY, None, False
         except Exception as e:
             logger.error(f"查询用户 {user_name} ({user_id}) 的月度数据失败: {e}")
-            return "查询日历数据时出错了 >_<", None, True
+            return CALENDAR_ERROR, None, True
         image_path = ""
-        if not self.font_path:
-            # 未配置字体：降级为文字提示（resources/fonts 或系统字体均缺失）
-            return (f"未找到可用中文字体，无法生成日历图片。请将字体放入插件目录 "
-                    f"resources/fonts/font.ttf。本月您已投喂{len(checkin_records)}天，"
-                    f"累计{total_cakes_this_month}块🍰。", None, False)
-        avatar_path = os.path.join(self.temp_dir, f"avatar_{user_id}.png")
-        av = self._load_avatar(user_id)
-        if av:
-            av.save(avatar_path)
-        else:
-            avatar_path = None
+        if self.render_backend == "pil" and not self.font_path:
+            # PIL 后端未配置字体：降级为文字提示（resources/fonts 或系统字体均缺失）
+            return CALENDAR_FONT_MISSING.format(
+                days=len(checkin_records), cakes=total_cakes_this_month), None, False
+        today = (date.today().day if (current_year == date.today().year
+                                      and current_month == date.today().month) else 0)
+        avatar_path = await self._save_qq_avatar(event, user_id, dark)
+        renderer = self._get_dark_renderer() if dark else self.calendar_renderer
+        pil_fallback = self._get_dark_renderer() if dark else self._pil_renderer
         try:
             image_path = await asyncio.to_thread(
-                self._create_calendar_image,
-                user_id, user_name, current_year, current_month, checkin_records, total_cakes_this_month, avatar_path
-            )
+                renderer.render,
+                user_id, user_name, current_year, current_month,
+                checkin_records, total_cakes_this_month, avatar_path, today)
             return None, image_path, False
         except FileNotFoundError:
             logger.error("字体文件未找到！无法生成日历图片。")
-            return f"服务器缺少字体文件，无法生成日历图片。请将字体放入插件目录 resources/fonts/font.ttf。本月您已投喂{len(checkin_records)}天，累计{total_cakes_this_month}块🍰。", None, False
+            return CALENDAR_SERVER_FONT_MISSING.format(
+                days=len(checkin_records), cakes=total_cakes_this_month), None, False
         except Exception as e:
+            if self.render_backend == "html":
+                logger.error(f"HTML 日历渲染失败，降级 PIL: {e}")
+                try:
+                    image_path = await asyncio.to_thread(
+                        pil_fallback.render,
+                        user_id, user_name, current_year, current_month,
+                        checkin_records, total_cakes_this_month, avatar_path, today)
+                    return None, image_path, False
+                except Exception as e2:
+                    logger.error(f"PIL 日历渲染降级也失败: {e2}")
+                    return CALENDAR_UNKNOWN_ERROR, None, True
             logger.error(f"生成或发送日历图片失败: {e}")
-            return "处理日历图片时发生了未知错误 >_<", None, True
+            return CALENDAR_UNKNOWN_ERROR, None, True
         finally:
             if avatar_path and os.path.exists(avatar_path):
                 try:
@@ -707,16 +700,17 @@ class CakeCore:
     def _create_three_column_ranking_image(self, today_self, today_received, today_helped,
                                            month_self, month_received, month_helped,
                                            year, month, page, total_pages, system_name="🍰",
-                                           avatar_dir=None, ach_map=None):
+                                           avatar_dir=None, ach_map=None, max_rows=10):
         """三栏排行榜：自己喂/被喂/替喂 × 今日/本月，名字旁显示成就徽章数。
 
         data_rows: (rank, uid, nickname, count, ach_count)
+        max_rows: 每栏最多展示行数（默认 10，与 ranking_display_count 配置保持一致）。
         """
         ach_map = ach_map or {}
         WIDTH = 900
         COL_W = (WIDTH - 80) // 3
         ROW_H = 46
-        MAX_ROWS = 10
+        MAX_ROWS = max(int(max_rows), 1)
         HEADER_H = 60
         TITLE_H = 75
         SUB_H = 25
@@ -741,10 +735,10 @@ class CakeCore:
         y = 15
         # 娅娅立绘接口：插件目录存在 denia.png 时绘制在标题左侧
         self._draw_denia_logo(img, draw, size=44, xy=(30, y - 4))
-        title_text = f"{year} 年 {month} 月 娅娅蛋糕🍰榜"
+        title_text = RANKING_TITLE.format(year=year, month=month)
         self._draw_text(draw, (WIDTH / 2, y), title_text, font=font_big, fill=BLACK, anchor="mt")
         y += TITLE_H
-        self._draw_text(draw, (WIDTH / 2, y), "每块蛋糕 = 娅娅的开心 +1", font=font_small, fill=GRAY, anchor="mt")
+        self._draw_text(draw, (WIDTH / 2, y), RANKING_SUBTITLE, font=font_small, fill=GRAY, anchor="mt")
         y += SUB_H
         draw.rectangle([0, y, WIDTH, y + SEP_H], fill=SEP_COLOR)
         y += SEP_H
@@ -813,11 +807,11 @@ class CakeCore:
                 self._draw_text(draw, (c_x, yy + ROW_H / 2), str(count), font=font_count, fill=RED, anchor="rm")
                 yy += ROW_H
 
-        self_col_title = "🍰·自己喂"
-        recv_col_title = "被喂·他人"
-        help_col_title = "替喂·助人"
+        self_col_title = RANKING_COL_SELF
+        recv_col_title = RANKING_COL_RECEIVED
+        help_col_title = RANKING_COL_HELP
 
-        self._draw_text(draw, (WIDTH / 2, y), "· 今日 ·", font=font_title, fill=GRAY, anchor="mt")
+        self._draw_text(draw, (WIDTH / 2, y), RANKING_TODAY, font=font_title, fill=GRAY, anchor="mt")
         y += SEC_H
 
         draw_column(40, self_col_title, today_self, y)
@@ -828,7 +822,7 @@ class CakeCore:
         draw.rectangle([0, y, WIDTH, y + SEP_H], fill=SEP_COLOR)
         y += SEP_H
 
-        self._draw_text(draw, (WIDTH / 2, y), "· 本月 ·", font=font_title, fill=GRAY, anchor="mt")
+        self._draw_text(draw, (WIDTH / 2, y), RANKING_MONTH, font=font_title, fill=GRAY, anchor="mt")
         y += SEC_H
 
         draw_column(40, self_col_title, month_self, y)
@@ -836,20 +830,23 @@ class CakeCore:
         draw_column(40 + 2 * (COL_W + 20), help_col_title, month_helped, y)
 
         y += HEADER_H + MAX_ROWS * ROW_H + 10
-        page_text = f"第 {page}/{total_pages} 页 · 发送「🍰榜 {page + 1}」翻页" if page < total_pages else f"第 {page}/{total_pages} 页"
+        if page < total_pages:
+            page_text = RANKING_PAGE.format(page=page, total=total_pages, next=page + 1)
+        else:
+            page_text = RANKING_PAGE_LAST.format(page=page, total=total_pages)
         self._draw_text(draw, (WIDTH / 2, y), page_text, font=font_small, fill=GRAY, anchor="mt")
 
         file_path = os.path.join(self.temp_dir, f"ranking_{year}_{month}_p{page}_{int(time.time())}.png")
         img.save(file_path)
         return file_path
 
-    async def _get_period_ranking_data(self, db_path, date_condition, group_user_ids, group_id=''):
+    async def _get_period_ranking_data(self, db_path, cond_sql, cond_params, group_user_ids, group_id=''):
         all_users = []
         try:
             async with aiosqlite.connect(db_path) as conn:
                 async with (await conn.execute(
-                    f"SELECT user_id, SUM(cake_count) as total FROM checkin WHERE group_id = ? AND {date_condition} GROUP BY user_id ORDER BY total DESC",
-                    (group_id,)
+                    f"SELECT user_id, SUM(cake_count) as total FROM checkin WHERE group_id = ? AND {cond_sql} GROUP BY user_id ORDER BY total DESC",
+                    (group_id, *cond_params)
                 )) as cursor:
                     rows = await cursor.fetchall()
                     for uid, total in rows:
@@ -859,13 +856,13 @@ class CakeCore:
             logger.error(f"查询排行数据失败: {e}")
         return all_users
 
-    async def _get_help_ranking_data(self, db_path, date_condition, group_user_ids, group_id=''):
+    async def _get_help_ranking_data(self, db_path, cond_sql, cond_params, group_user_ids, group_id=''):
         all_users = []
         try:
             async with aiosqlite.connect(db_path) as conn:
                 async with (await conn.execute(
-                    f"SELECT helper_id, SUM(count) as total FROM help_record WHERE group_id = ? AND {date_condition} GROUP BY helper_id ORDER BY total DESC",
-                    (group_id,)
+                    f"SELECT helper_id, SUM(count) as total FROM help_record WHERE group_id = ? AND {cond_sql} GROUP BY helper_id ORDER BY total DESC",
+                    (group_id, *cond_params)
                 )) as cursor:
                     rows = await cursor.fetchall()
                     for hid, total in rows:
@@ -875,13 +872,13 @@ class CakeCore:
             logger.error(f"查询替喂榜数据失败: {e}")
         return all_users
 
-    async def _get_received_ranking_data(self, db_path, date_condition, group_user_ids, group_id=''):
+    async def _get_received_ranking_data(self, db_path, cond_sql, cond_params, group_user_ids, group_id=''):
         all_users = []
         try:
             async with aiosqlite.connect(db_path) as conn:
                 async with (await conn.execute(
-                    f"SELECT target_id, SUM(count) as total FROM help_record WHERE group_id = ? AND {date_condition} GROUP BY target_id ORDER BY total DESC",
-                    (group_id,)
+                    f"SELECT target_id, SUM(count) as total FROM help_record WHERE group_id = ? AND {cond_sql} GROUP BY target_id ORDER BY total DESC",
+                    (group_id, *cond_params)
                 )) as cursor:
                     rows = await cursor.fetchall()
                     for tid, total in rows:

@@ -1,0 +1,47 @@
+{
+  "name": "娅娅 · 马卡龙双层",
+  "colors": {
+    "bg_top": "#fdeef4",
+    "bg_mid": "#fbdfeb",
+    "bg_bottom": "#f7d0e0",
+    "card_fill": "rgba(255,255,255,0.96)",
+    "card_border": "#f8d7e4",
+    "title": "#e23e63",
+    "subtitle": "#cf91a6",
+    "weekday": "#b88a99",
+    "weekend": "#e23e63",
+    "day_text": "#5a464f",
+    "empty_bg": "#faf5f8",
+    "empty_border": "#efe3ea",
+    "feed_top": "#ffd0e2",
+    "feed_bottom": "#f7a9c8",
+    "feed_border": "#ffffff",
+    "today_bg": "#fff0f6",
+    "badge": "#e23e63",
+    "foot_top": "#ffe3ee",
+    "foot_bottom": "#f9c3d8",
+    "foot_text": "#d84762"
+  },
+  "glows": [
+    {"cx": 90, "cy": 40, "radius": 160, "color": "#ffffff", "strength": 75},
+    {"cx": 510, "cy": 490, "radius": 190, "color": "#ffd6ea", "strength": 50}
+  ],
+  "glow_top": "rgba(255,255,255,0.92)",
+  "glow_bottom": "rgba(255,205,228,0.85)",
+  "bubbles": [
+    {"left": 22, "top": 34, "size": 46, "opacity": 0.88, "fill": "#f7b6c9"},
+    {"left": 506, "top": 20, "size": 30, "opacity": 0.82, "fill": "#c9e0d8"},
+    {"left": 540, "top": 424, "size": 58, "opacity": 0.80, "fill": "#e8c9f0"},
+    {"left": 32, "top": 442, "size": 38, "opacity": 0.85, "fill": "#f5c9a8"},
+    {"left": 258, "top": 10, "size": 20, "opacity": 0.75, "fill": "#b8d4f0"},
+    {"left": 428, "top": 118, "size": 24, "opacity": 0.70, "fill": "#f0c8e0"},
+    {"left": 122, "top": 474, "size": 28, "opacity": 0.82, "fill": "#c8e0c0"},
+    {"left": 470, "top": 330, "size": 18, "opacity": 0.65, "fill": "#f0c0b8"},
+    {"left": 302, "top": 482, "size": 22, "opacity": 0.78, "fill": "#d0c0e8"},
+    {"left": 62, "top": 202, "size": 28, "opacity": 0.72, "fill": "#e8d0b0"}
+  ],
+  "options": {
+    "show_avatar": true,
+    "show_bubbles": true
+  }
+}

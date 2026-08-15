@@ -1,4 +1,10 @@
 {
+    "trigger_words": {
+        "description": "触发词列表",
+        "hint": "命令关键词，默认 🍰/蛋糕；可改成任意词（建议单字符或短词），如改为 ['🍬','糖果'] 则命令变为 🍬日历/🍬榜 等",
+        "type": "list",
+        "default": ["🍰", "蛋糕"]
+    },
     "group_whitelist": {
         "description": "群组白名单",
         "hint": "只有在白名单里的群才能使用本插件功能，不填表示所有群都可使用",
@@ -18,20 +24,14 @@
         "default": "00:00"
     },
     "auto_delete_last_month_data": {
-        "description": "自动删除上月数据",
-        "hint": "启用后每月初自动删除上月数据，禁用则保留历史数据可查看往月记录",
+        "description": "自动清理两个月前的旧数据",
+        "hint": "启用后每次插件启动/跨天时删除两个月前的投喂记录，控制数据库体积；禁用则保留全部历史（生涯/年度报告需要历史数据）。注意：实际删除的是两个月前及更早的数据，不是上月。默认关闭以保留历史",
         "type": "bool",
-        "default": true
+        "default": false
     },
     "daily_max_checkins": {
         "description": "每日最多喂蛋糕次数",
-        "hint": "设置每天最多喂给娅娅的蛋糕数，超过此数量将不再记录，设置为0表示无限制",
-        "type": "int",
-        "default": 0
-    },
-    "monthly_max_checkins": {
-        "description": "每月最多喂蛋糕次数",
-        "hint": "设置每月最多喂给娅娅的蛋糕数，超过此数量将不再记录，设置为0表示无限制",
+        "hint": "每天最多喂几次（每条喂蛋糕消息算 1 次，含帮喂/补签），超出随机提示娅娅吃不下；设置为0表示无限制",
         "type": "int",
         "default": 0
     },
@@ -81,12 +81,26 @@
         "description": "中文字体下载地址",
         "hint": "自备字体时填自己的下载链接，留空使用默认（托管于本插件 GitHub Releases）",
         "type": "string",
-        "default": "https://github.com/xiaoxi2760/astrbot_plugin_cake_denia/releases/download/v0.0.0/font.ttf"
+        "default": "https://github.com/xiaoxi2760/astrbot_plugin_cake_denia/releases/download/v1.0.0/font.ttf"
     },
     "emoji_download_url": {
         "description": "emoji 字体下载地址",
         "hint": "自备字体时填自己的下载链接，留空使用默认；Windows 系统自带 emoji 字体可不填",
         "type": "string",
-        "default": "https://github.com/xiaoxi2760/astrbot_plugin_cake_denia/releases/download/v0.0.0/emoji.ttf"
+        "default": "https://github.com/xiaoxi2760/astrbot_plugin_cake_denia/releases/download/v1.0.0/emoji.ttf"
+    },
+    "render_backend": {
+        "description": "日历渲染后端",
+        "hint": "pil=纯 PIL 绘制（无额外依赖，效果略逊）；html=HTML/CSS + Playwright + 系统 Chrome（效果与设计稿一致，服务器需安装 playwright 与 Chrome，失败自动降级 pil）",
+        "type": "string",
+        "default": "pil",
+        "options": ["pil", "html"]
+    },
+    "theme_preset": {
+        "description": "日历主题",
+        "hint": "预设：娅娅-泡泡初绽（默认）/ 娅娅-马卡龙双层 / 达妮娅-暗夜泡泡 / 达妮娅-阿列夫之眼；custom=使用 resources/theme.json 自定义。注意：达妮娅（暗夜）回复是彩蛋（20% 概率），与主题选择无关",
+        "type": "string",
+        "default": "white-1",
+        "options": ["custom", "white-1", "white-2", "black-1", "black-2"]
     }
 }

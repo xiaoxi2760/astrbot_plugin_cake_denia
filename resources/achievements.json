@@ -1,0 +1,15 @@
+[
+  {"id": "cake_10", "name": "初尝甜蜜", "icon": "🍰", "desc": "累计喂满 10 块蛋糕", "type": "total_cakes", "threshold": 10},
+  {"id": "cake_50", "name": "泡泡学徒", "icon": "🫧", "desc": "累计喂满 50 块蛋糕，虚质科学部的新人", "type": "total_cakes", "threshold": 50},
+  {"id": "cake_100", "name": "虚质甜点师", "icon": "🎂", "desc": "累计喂满 100 块蛋糕，泡泡都记得", "type": "total_cakes", "threshold": 100},
+  {"id": "cake_365", "name": "一年份的甜", "icon": "🌈", "desc": "累计喂满 365 块蛋糕", "type": "total_cakes", "threshold": 365},
+  {"id": "cake_1000", "name": "海啸级投喂", "icon": "👑", "desc": "累计喂满 1000 块蛋糕，娅娅认证的「海啸级」投喂手", "type": "total_cakes", "threshold": 1000},
+  {"id": "streak_3", "name": "连续投喂3天", "icon": "🔥", "desc": "连续 3 天给娅娅喂蛋糕", "type": "streak", "threshold": 3},
+  {"id": "streak_7", "name": "连续投喂7天", "icon": "🔥", "desc": "连续 7 天给娅娅喂蛋糕", "type": "streak", "threshold": 7},
+  {"id": "streak_30", "name": "连续投喂30天", "icon": "🔥", "desc": "连续 30 天给娅娅喂蛋糕", "type": "streak", "threshold": 30},
+  {"id": "daily_5", "name": "蛋糕暴击", "icon": "⚡", "desc": "单日喂满 5 块蛋糕", "type": "max_daily", "threshold": 5},
+  {"id": "daily_10", "name": "泡泡轰炸", "icon": "⚡", "desc": "单日喂满 10 块蛋糕，娅娅的泡泡都炸成烟花啦", "type": "max_daily", "threshold": 10},
+  {"id": "help_5", "name": "替喂小天使", "icon": "🤝", "desc": "替别人喂满 5 块蛋糕", "type": "total_helped", "threshold": 5},
+  {"id": "help_20", "name": "金牌代喂", "icon": "🤝", "desc": "替别人喂满 20 块蛋糕", "type": "total_helped", "threshold": 20},
+  {"id": "received_50", "name": "人气蛋糕师", "icon": "💝", "desc": "被喂满 50 块蛋糕", "type": "total_received", "threshold": 50}
+]

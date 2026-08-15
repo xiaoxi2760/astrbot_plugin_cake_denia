@@ -1,0 +1,47 @@
+{
+  "name": "达妮娅 · 阿列夫之眼",
+  "colors": {
+    "bg_top": "#1a0f14",
+    "bg_mid": "#241222",
+    "bg_bottom": "#10080e",
+    "card_fill": "rgba(30,18,28,0.94)",
+    "card_border": "#523a48",
+    "title": "#f0d5c8",
+    "subtitle": "#a08898",
+    "weekday": "#8a7580",
+    "weekend": "#e04a6a",
+    "day_text": "#e0c8d0",
+    "empty_bg": "#26161c",
+    "empty_border": "#3a242e",
+    "feed_top": "#7a2a40",
+    "feed_bottom": "#a83858",
+    "feed_border": "#c05070",
+    "today_bg": "#331a26",
+    "badge": "#e04a6a",
+    "foot_top": "#4a2028",
+    "foot_bottom": "#5c2a36",
+    "foot_text": "#e0a0b0"
+  },
+  "glows": [
+    {"cx": 100, "cy": 40, "radius": 150, "color": "#8c3050", "strength": 45},
+    {"cx": 510, "cy": 490, "radius": 180, "color": "#6a2a5a", "strength": 40}
+  ],
+  "glow_top": "rgba(140,48,80,0.5)",
+  "glow_bottom": "rgba(106,42,90,0.45)",
+  "bubbles": [
+    {"left": 18, "top": 30, "size": 54, "opacity": 0.85, "fill": "#b04a68"},
+    {"left": 500, "top": 22, "size": 34, "opacity": 0.80, "fill": "#8a3a5c"},
+    {"left": 548, "top": 420, "size": 64, "opacity": 0.78, "fill": "#c05070"},
+    {"left": 36, "top": 440, "size": 40, "opacity": 0.82, "fill": "#6a2a4a"},
+    {"left": 250, "top": 12, "size": 22, "opacity": 0.72, "fill": "#a04a7a"},
+    {"left": 430, "top": 120, "size": 26, "opacity": 0.68, "fill": "#8a4a6a"},
+    {"left": 120, "top": 470, "size": 30, "opacity": 0.78, "fill": "#7a2a5a"},
+    {"left": 468, "top": 330, "size": 20, "opacity": 0.62, "fill": "#c06080"},
+    {"left": 300, "top": 480, "size": 24, "opacity": 0.72, "fill": "#a0506a"},
+    {"left": 60, "top": 200, "size": 30, "opacity": 0.70, "fill": "#8a3a6a"}
+  ],
+  "options": {
+    "show_avatar": true,
+    "show_bubbles": true
+  }
+}

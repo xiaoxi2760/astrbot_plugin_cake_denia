@@ -1,0 +1,46 @@
+{
+  "colors": {
+    "bg_top": "#fff6fb",
+    "bg_mid": "#ffeef4",
+    "bg_bottom": "#ffe4ef",
+    "card_fill": "rgba(255,255,255,0.94)",
+    "card_border": "#f3d6e4",
+    "title": "#65432a",
+    "subtitle": "#b2909e",
+    "weekday": "#b08a98",
+    "weekend": "#db7093",
+    "day_text": "#5a464f",
+    "empty_bg": "#fcf9fa",
+    "empty_border": "#f0e8ec",
+    "feed_top": "#ffdcec",
+    "feed_bottom": "#ffc8dd",
+    "feed_border": "#f6b6cf",
+    "today_bg": "#fff0f6",
+    "badge": "#e9546b",
+    "foot_top": "#ffe3ee",
+    "foot_bottom": "#ffd0e2",
+    "foot_text": "#d84762"
+  },
+  "glows": [
+    {"cx": 110, "cy": 45, "radius": 150, "color": "#ffffff", "strength": 70},
+    {"cx": 505, "cy": 485, "radius": 180, "color": "#ffd6ea", "strength": 55}
+  ],
+  "glow_top": "rgba(255,255,255,0.9)",
+  "glow_bottom": "rgba(255,214,234,0.8)",
+  "bubbles": [
+    {"left": 18, "top": 30, "size": 54, "opacity": 0.92, "fill": "#f2708f"},
+    {"left": 500, "top": 22, "size": 34, "opacity": 0.88, "fill": "#c99be6"},
+    {"left": 548, "top": 420, "size": 64, "opacity": 0.85, "fill": "#f78fb4"},
+    {"left": 36, "top": 440, "size": 40, "opacity": 0.90, "fill": "#f5b8a0"},
+    {"left": 250, "top": 12, "size": 22, "opacity": 0.80, "fill": "#f48fb1"},
+    {"left": 430, "top": 120, "size": 26, "opacity": 0.75, "fill": "#d7a7e8"},
+    {"left": 120, "top": 470, "size": 30, "opacity": 0.85, "fill": "#f28ba5"},
+    {"left": 468, "top": 330, "size": 20, "opacity": 0.70, "fill": "#f7b6d0"},
+    {"left": 300, "top": 480, "size": 24, "opacity": 0.80, "fill": "#c9a3e8"},
+    {"left": 60, "top": 200, "size": 30, "opacity": 0.78, "fill": "#f5a9bc"}
+  ],
+  "options": {
+    "show_avatar": true,
+    "show_bubbles": true
+  }
+}

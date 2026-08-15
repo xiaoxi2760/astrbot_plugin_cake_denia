@@ -1,101 +1,126 @@
-"""🍰 cake_denia —— 鸣潮达妮娅（娅娅）喂小蛋糕插件。
+"""🍰 cake_denia —— 今天你喂娅娅小蛋糕了吗。
 
 发送 🍰 给娅娅喂一块小蛋糕。支持帮喂、日历、报告、生涯、补签、排行榜、
 成就、LLM 概率对话等功能。
-
-基于 astrbot_plugin_deer_check v3 改造（单系统：只有喂蛋糕）。
 """
 import aiosqlite
 import asyncio
 import calendar
+import json
 import math
 import os
 import random
 import re
+import time
 from datetime import date, datetime, timedelta
 
 from astrbot.api.event import filter, AstrMessageEvent
+from astrbot.api.event.filter import CustomFilter
 from astrbot.api.star import Context, Star
 from astrbot.api.message_components import Plain, Image
 from astrbot.api import logger
 from astrbot.core.star import StarTools
 
 from .cake_core import CakeCore
+from .resources.texts import (
+    FEED_SUCCESS, FEED_MULTI, FEED_TOO_MANY, HELP_FEED,
+    DAILY_LIMIT_REPLIES,
+    BLACK_FEED_SUCCESS, BLACK_FEED_MULTI, BLACK_HELP_FEED,
+    BLACK_FEED_TOO_MANY, BLACK_DAILY_LIMIT_REPLIES,
+    LLM_SYSTEM_PROMPT, LLM_USER_PROMPT, LLM_REPLY_PREFIX,
+    ACHIEVEMENT_UNLOCK, ACHIEVEMENTS_TITLE,
+    ACHIEVEMENTS_PROGRESS, ACHIEVEMENTS_ERROR,
+    ACHIEVEMENT_UNLOCKED_LINE, ACHIEVEMENT_LOCKED,
+    NO_RECORD, CHECKIN_ERROR, ANALYSIS_BAD_MONTH,
+    CAREER_ERROR, CAREER_IMG_ERROR,
+    RANKING_GROUP_ONLY, RANKING_NO_MEMBERS, RANKING_ERROR,
+    RETRO_FORMAT_ERR, RETRO_INVALID_DAY, RETRO_FUTURE, RETRO_ERROR,
+    RESET_ADMIN_ONLY, RESET_DONE, RESET_EMPTY, RESET_ERROR,
+    CAREER_SUMMARY_LEVELS, CAREER_REST_GAP, CAREER_REST_ALWAYS,
+    CAREER_SAGE_ZERO, CAREER_SAGE_LOW,
+    CAREER_STATUS_0, CAREER_STATUS_LE3, CAREER_STATUS_LE7,
+    CAREER_STATUS_LE30, CAREER_STATUS_OVER,
+    HELP_TEXT,
+)
 
 FONT_FILE = "font.ttf"
 DB_NAME = "yaya_cake.db"
 
 # 默认字体下载地址（托管在本插件 GitHub Releases 附件）
-DEFAULT_FONT_URL = "https://github.com/xiaoxi2760/astrbot_plugin_cake_denia/releases/download/v0.0.0/font.ttf"
-DEFAULT_EMOJI_URL = "https://github.com/xiaoxi2760/astrbot_plugin_cake_denia/releases/download/v0.0.0/emoji.ttf"
+DEFAULT_FONT_URL = "https://github.com/xiaoxi2760/astrbot_plugin_cake_denia/releases/download/v1.0.0/font.ttf"
+DEFAULT_EMOJI_URL = "https://github.com/xiaoxi2760/astrbot_plugin_cake_denia/releases/download/v1.0.0/emoji.ttf"
 
-# 娅娅的文案（基于达妮娅人设：懒散温柔、轻声、像随时会睡着，表面柔和、底下藏冷感）
-FEED_SUCCESS = [
-    "娅娅睁开半阖的眼睛，看了蛋糕一会儿：给我的？……嗯，那我收下了。",
-    "娅娅接过蛋糕，指尖浮起一枚亮晶晶的小泡泡：甜的，让人想睡觉。谢谢你。",
-    "娅娅小口吃掉蛋糕，眯起眼像一只晒足了太阳的猫：好吃。今天心情变好了一点。",
-    "娅娅歪头看着你：这样投喂我，是想收买我吗？……开玩笑的，蛋糕很好吃。",
-]
+# ---------------------------------------------------------------- 成就系统（用户可 DIY）
+# 成就定义在 resources/achievements.json，字段：id/name/icon/desc/type/threshold。
+# type ∈ {total_cakes, streak, max_daily, total_helped, total_received}，对应成就统计字段。
+def _load_achievements() -> dict:
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        'resources', 'achievements.json')
+    achievements = {}
+    try:
+        with open(path, encoding='utf-8') as f:
+            for item in json.load(f):
+                aid = str(item.get('id', '')).strip()
+                if not aid:
+                    continue
+                t = item.get('type', 'total_cakes')
+                th = item.get('threshold', 1)
+                achievements[aid] = {
+                    'id': aid,
+                    'name': item.get('name', aid),
+                    'icon': item.get('icon', '🏅'),
+                    'desc': item.get('desc', ''),
+                    'type': t,
+                    'threshold': th,
+                    'check': (lambda s, _t=t, _th=th: s.get(_t, 0) >= _th),
+                }
+    except Exception as e:
+        logger.error(f"加载成就配置失败: {e}")
+    return achievements
 
-FEED_MULTI = [
-    "娅娅看着{count}块小蛋糕，头顶的泡泡轻轻晃了晃：这么多……是想把我喂胖，然后看我打盹吗。谢谢。",
-    "娅娅把{count}块蛋糕一个个变成泡泡再戳破吃掉，满足地呼出一口气：甜的，记住了。",
-    "娅娅慢慢吃掉{count}块小蛋糕，眼神像快睡着的猫：这样的日子，偶尔也不错。",
-]
 
-HELP_FEED = "娅娅看着替{names}送来的蛋糕，泡泡绕着她飘了一圈：心意我收到了。替我谢谢他们。"
+ACHIEVEMENTS = _load_achievements()
 
-# 单条消息超限（一次发太多 🍰）时的娅娅吃不下文案
-FEED_TOO_MANY = [
-    "娅娅盯着眼前堆成小山的蛋糕，泡泡把多余的轻轻推开：……吃不下这么多。{max}块就好，再多会坏掉的。",
-    "娅娅揉了揉肚子，语气忽然淡下来：再喂下去，我可能要认真考虑把你变成泡泡了。……开玩笑的，吃不下那么多，{max}块就够。",
-    "娅娅摇头，泡泡温柔地托走多余的蛋糕：吃不下啦，{max}块就够了。贪心的话，会把某些东西弄丢的。",
-]
+# ---------------------------------------------------------------- 触发词（用户可 DIY）
+# 配置项 trigger_words 控制命令关键词（默认 🍰/蛋糕），自定义 filter 在匹配时读取配置动态匹配。
+DEFAULT_TRIGGER_WORDS = ["🍰", "蛋糕"]
 
-# ---------------------------------------------------------------- 成就定义
-# check 接收 stats: {total_cakes, total_days, max_daily, streak, total_helped, total_received}
-ACHIEVEMENTS = {
-    'cake_10': {'name': '初尝甜蜜', 'icon': '🍰', 'desc': '累计喂满 10 块蛋糕',
-                'check': lambda s: s['total_cakes'] >= 10},
-    'cake_50': {'name': '泡泡学徒', 'icon': '🫧', 'desc': '累计喂满 50 块蛋糕，虚质科学部的新人',
-                'check': lambda s: s['total_cakes'] >= 50},
-    'cake_100': {'name': '虚质甜点师', 'icon': '🎂', 'desc': '累计喂满 100 块蛋糕，泡泡都记得',
-                 'check': lambda s: s['total_cakes'] >= 100},
-    'cake_365': {'name': '一年份的甜', 'icon': '🌈', 'desc': '累计喂满 365 块蛋糕',
-                 'check': lambda s: s['total_cakes'] >= 365},
-    'cake_1000': {'name': '海啸级投喂', 'icon': '👑', 'desc': '累计喂满 1000 块蛋糕，娅娅认证的「海啸级」投喂手',
-                  'check': lambda s: s['total_cakes'] >= 1000},
-    'streak_3': {'name': '连续投喂3天', 'icon': '🔥', 'desc': '连续 3 天给娅娅喂蛋糕',
-                 'check': lambda s: s['streak'] >= 3},
-    'streak_7': {'name': '连续投喂7天', 'icon': '🔥', 'desc': '连续 7 天给娅娅喂蛋糕',
-                 'check': lambda s: s['streak'] >= 7},
-    'streak_30': {'name': '连续投喂30天', 'icon': '🔥', 'desc': '连续 30 天给娅娅喂蛋糕',
-                  'check': lambda s: s['streak'] >= 30},
-    'daily_5': {'name': '蛋糕暴击', 'icon': '⚡', 'desc': '单日喂满 5 块蛋糕',
-                'check': lambda s: s['max_daily'] >= 5},
-    'daily_10': {'name': '泡泡轰炸', 'icon': '⚡', 'desc': '单日喂满 10 块蛋糕，娅娅的泡泡都炸成烟花啦',
-                 'check': lambda s: s['max_daily'] >= 10},
-    'help_5': {'name': '替喂小天使', 'icon': '🤝', 'desc': '替别人喂满 5 块蛋糕',
-               'check': lambda s: s['total_helped'] >= 5},
-    'help_20': {'name': '金牌代喂', 'icon': '🤝', 'desc': '替别人喂满 20 块蛋糕',
-                'check': lambda s: s['total_helped'] >= 20},
-    'received_50': {'name': '人气蛋糕师', 'icon': '💝', 'desc': '被喂满 50 块蛋糕',
-                    'check': lambda s: s['total_received'] >= 50},
-}
 
-# ---------------------------------------------------------------- LLM 娅娅人设
-# 参考本地人设文档：懒散、轻声、像随时会睡着；表面温柔底下藏冷感；不热血不元气不撒娇。
-LLM_SYSTEM_PROMPT = (
-    "你是《鸣潮》中的角色达妮娅（Denia，昵称娅娅），星炬学院虚质科学部的学生，"
-    "表面温柔、懒散、像随时会睡着，语气轻而慢、短句为主；"
-    "但你其实是被残星会与阿列夫一制造出的「容器」，温柔和慵懒只是你模仿出来的人类外壳。"
-    "有人刚给你喂了小蛋糕，请以达妮娅的口吻回应一小段话（40~80字）：轻、慢、短、懒，"
-    "温柔中带一点距离，可以提到甜点、泡泡/泡影、打盹、学院生活，偶尔流露一丝神秘与冷感。"
-    "禁止说网络热梗，禁止元气撒娇，禁止热血感叹，禁止提及你是AI或模型。"
-)
-LLM_USER_PROMPT = "今天收到了一块小蛋糕，达妮娅想说点什么？"
+class _TriggerWordFilter(CustomFilter):
+    """按配置的触发词 + 命令后缀动态匹配消息。"""
 
-ACHIEVEMENT_UNLOCK = "🎉 解锁新成就：【{icon} {name}】{desc}！"
+    prefix = ""          # 触发词前的可选前缀正则（如 查看|查询）
+    suffix = ""          # 触发词后的命令正则
+    char_class = False   # True 时触发词按字符类匹配（连发计数语义），否则按整体词匹配
+
+    def filter(self, event, cfg):
+        words = None
+        if cfg is not None and hasattr(cfg, 'get'):
+            try:
+                words = cfg.get('trigger_words')
+            except Exception:
+                words = None
+        if not words:
+            words = DEFAULT_TRIGGER_WORDS
+        if self.char_class:
+            char_class = ''.join(re.escape(w) for w in words)
+            pattern = f'^(?:{self.prefix})?[{char_class}]{self.suffix}'
+        else:
+            alt = '|'.join(re.escape(w) for w in words)
+            pattern = f'^(?:{self.prefix})?(?:{alt}){self.suffix}'
+        try:
+            return bool(re.match(pattern, event.get_message_str().strip()))
+        except re.error:
+            return False
+
+
+def trigger_filter(suffix: str, prefix: str = "", char_class: bool = False):
+    """生成一个按触发词动态匹配的 CustomFilter 类（每个命令一个）。
+
+    char_class=True 时触发词按字符类匹配（喂蛋糕连发计数），否则按整体词匹配（命令词）。
+    """
+    return type('TriggerWordFilter', (_TriggerWordFilter,),
+                {'prefix': prefix, 'suffix': suffix, 'char_class': char_class})
 
 
 class CakeDeniaPlugin(Star):
@@ -103,12 +128,11 @@ class CakeDeniaPlugin(Star):
     def __init__(self, context: Context, config: dict = None):
         super().__init__(context)
         config = config if config is not None else {}
-        self.group_whitelist = config.get("group_whitelist", [])
-        self.user_blacklist = config.get("user_blacklist", [])
+        self.group_whitelist = [str(g) for g in config.get("group_whitelist", [])]
+        self.user_blacklist = [str(b) for b in config.get("user_blacklist", [])]
         self.day_start_time = config.get("day_start_time", "00:00")
-        self.auto_delete_last_month_data = bool(config.get("auto_delete_last_month_data", True))
+        self.auto_delete_last_month_data = bool(config.get("auto_delete_last_month_data", False))
         self.daily_max_checkins = int(config.get("daily_max_checkins", 0))
-        self.monthly_max_checkins = int(config.get("monthly_max_checkins", 0))
         self.max_cakes_per_message = max(1, int(config.get("max_cakes_per_message", 3)))
         self.ranking_display_count = int(config.get("ranking_display_count", 10))
         self.llm_enabled = bool(config.get("llm_enabled", True))
@@ -121,6 +145,11 @@ class CakeDeniaPlugin(Star):
         self.auto_download_font = bool(config.get("auto_download_font", True))
         self.font_download_url = config.get("font_download_url", DEFAULT_FONT_URL)
         self.emoji_download_url = config.get("emoji_download_url", DEFAULT_EMOJI_URL)
+        self.render_backend = config.get("render_backend", "pil")
+        self.theme_preset = config.get("theme_preset", "white-1")
+        # 触发词（用户可 DIY）：默认 🍰/蛋糕，可改为任意关键词
+        words = config.get("trigger_words") or DEFAULT_TRIGGER_WORDS
+        self.trigger_words = [str(w) for w in words]
 
         data_dir = StarTools.get_data_dir("astrbot_plugin_cake_denia")
         plugin_dir = os.path.dirname(os.path.abspath(__file__))
@@ -133,25 +162,58 @@ class CakeDeniaPlugin(Star):
         os.makedirs(self.temp_dir, exist_ok=True)
         os.makedirs(self.avatar_dir, exist_ok=True)
 
-        self.core = CakeCore(self.font_path, self.db_path, self.temp_dir)
+        self.core = CakeCore(self.font_path, self.db_path, self.temp_dir,
+                             self.render_backend, self.theme_preset)
 
         self._initialized = False
-        self._init_lock = asyncio.Lock() if False else None
+        self._init_lock = asyncio.Lock()
+        self._last_maintenance = 0.0
 
     async def _ensure_initialized(self):
-        if self._initialized:
+        if not self._initialized:
+            async with self._init_lock:
+                if self._initialized:
+                    return
+                await self._init_db()
+                await self._monthly_cleanup()
+                await self._cleanup_temp_files()
+                # 资源字体缺失时自动下载默认字体（失败静默降级，不影响使用）
+                if self.auto_download_font:
+                    await self.core.ensure_fonts(self.font_download_url, self.emoji_download_url)
+                self._initialized = True
+        await self._maybe_periodic_maintenance()
+
+    async def _maybe_periodic_maintenance(self):
+        """周期维护：每天最多执行一次月度清理与临时文件清理（跨月不重启也能清）。"""
+        now = time.time()
+        if now - self._last_maintenance < 86400:
             return
-        if self._init_lock is None:
-            self._init_lock = asyncio.Lock()
-        async with self._init_lock:
-            if self._initialized:
-                return
-            await self._init_db()
-            await self._monthly_cleanup()
-            # 资源字体缺失时自动下载默认字体（失败静默降级，不影响使用）
-            if self.auto_download_font:
-                await self.core.ensure_fonts(self.font_download_url, self.emoji_download_url)
-            self._initialized = True
+        self._last_maintenance = now
+        await self._monthly_cleanup()
+        await self._cleanup_temp_files()
+
+    @filter.on_plugin_unloaded()
+    async def _close_html_browser(self, metadata=None):
+        """插件卸载/热重载时回收 HTML 渲染器的浏览器进程（AstrBot on_plugin_unloaded 事件）。"""
+        try:
+            from .render_html.calendar import _close_browser
+            _close_browser()
+        except Exception:
+            pass
+
+    async def _cleanup_temp_files(self, max_age: float = 3600):
+        """清理 tmp 目录中超过 max_age 秒的临时图片/HTML，避免长期运行积累。"""
+        try:
+            now = time.time()
+            for name in os.listdir(self.temp_dir):
+                path = os.path.join(self.temp_dir, name)
+                try:
+                    if os.path.isfile(path) and now - os.path.getmtime(path) > max_age:
+                        os.remove(path)
+                except OSError:
+                    continue
+        except Exception as e:
+            logger.error(f"清理临时文件失败: {e}")
 
     async def _init_db(self):
         async with aiosqlite.connect(self.db_path) as conn:
@@ -229,12 +291,27 @@ class CakeDeniaPlugin(Star):
     async def _check_group_and_blacklist(self, event: AstrMessageEvent) -> bool:
         group_id = event.get_group_id()
         if group_id:
-            if self.group_whitelist and str(group_id) not in [str(g) for g in self.group_whitelist]:
+            if self.group_whitelist and str(group_id) not in self.group_whitelist:
                 return False
         sender_id = event.get_sender_id()
         if str(sender_id) in self.user_blacklist:
             return False
         return True
+
+    async def _is_group_admin(self, event: AstrMessageEvent, group_id: str, user_id: str) -> bool:
+        """判断用户是否为管理员：AstrBot 全局管理员（event.role）或群主/群管理员（QQ 平台）。"""
+        if getattr(event, 'role', 'member') == 'admin':
+            return True
+        try:
+            if event.get_platform_name() == "aiocqhttp":
+                from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import AiocqhttpMessageEvent
+                if isinstance(event, AiocqhttpMessageEvent):
+                    member_info = await event.bot.get_group_member_info(
+                        group_id=int(group_id), user_id=int(user_id))
+                    return member_info.get('role') in ('owner', 'admin')
+        except Exception as e:
+            logger.error(f"查询群管理权限失败: {e}")
+        return False
 
     def _get_at_targets(self, event: AstrMessageEvent) -> list:
         targets = []
@@ -250,14 +327,90 @@ class CakeDeniaPlugin(Star):
             pass
         return targets
 
-    def _feed_reply(self, count: int) -> str:
+    def _black_egg(self) -> bool:
+        """达妮娅彩蛋：20% 概率随机出现，与日历主题无关。"""
+        return random.random() < 0.2
+
+    def _feed_reply(self, count: int, egg: bool = None) -> str:
+        if egg is None:
+            egg = self._black_egg()
         if count > 1:
-            tpl = random.choice(FEED_MULTI)
-            return tpl.format(count=count)
+            if egg and BLACK_FEED_MULTI:
+                return random.choice(BLACK_FEED_MULTI).format(count=count)
+            return random.choice(FEED_MULTI).format(count=count)
+        if egg and BLACK_FEED_SUCCESS:
+            return random.choice(BLACK_FEED_SUCCESS)
         return random.choice(FEED_SUCCESS)
 
-    def _feed_too_many(self) -> str:
+    def _feed_too_many(self, egg: bool = None) -> str:
+        if egg is None:
+            egg = self._black_egg()
+        if egg and BLACK_FEED_TOO_MANY:
+            return random.choice(BLACK_FEED_TOO_MANY).format(max=self.max_cakes_per_message)
         return random.choice(FEED_TOO_MANY).format(max=self.max_cakes_per_message)
+
+    # ------------------------------------------------------------ 触发词辅助
+    def _after_trigger(self, text: str):
+        """去掉开头的触发词，返回剩余部分；不是触发词开头返回 None（最长词优先）。"""
+        for w in sorted(self.trigger_words, key=len, reverse=True):
+            if text.startswith(w):
+                return text[len(w):]
+        return None
+
+    def _count_trigger_chars(self, text: str) -> int:
+        """统计消息开头连续喂的触发词个数（按完整触发词计数：🍰🍰=2、蛋糕=1）。"""
+        words = sorted(self.trigger_words, key=len, reverse=True)
+        n = 0
+        i = 0
+        while i < len(text):
+            for w in words:
+                if text.startswith(w, i):
+                    n += 1
+                    i += len(w)
+                    break
+            else:
+                break
+        return n
+
+    # ------------------------------------------------------------ 每日次数限额
+    @staticmethod
+    def _daily_ops_key(user_id: str, group_id: str, adjusted_date: str) -> str:
+        return f"daily_ops:{user_id}:{group_id}:{adjusted_date}"
+
+    async def _try_consume_daily_op(self, user_id: str, group_id: str, adjusted_date: str):
+        """原子地检查并占用一次当日额度。
+
+        返回：True=占用成功（已计数）；False=已达每日上限；None=数据库错误（区分于超限）。
+        """
+        if self.daily_max_checkins <= 0:
+            return True
+        key = self._daily_ops_key(user_id, group_id, adjusted_date)
+        try:
+            async with aiosqlite.connect(self.db_path, timeout=5.0) as conn:
+                cursor = await conn.execute(
+                    "INSERT INTO metadata (key, value) VALUES (?, '1') "
+                    "ON CONFLICT(key) DO UPDATE SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT) "
+                    "WHERE CAST(CAST(value AS INTEGER) AS INTEGER) < ?",
+                    (key, self.daily_max_checkins))
+                await conn.commit()
+                return bool(cursor.rowcount)
+        except Exception as e:
+            logger.error(f"占用每日次数失败: {e}")
+            return None
+
+    def _daily_limit_reply(self, egg: bool = None) -> str:
+        if egg is None:
+            egg = self._black_egg()
+        if egg and BLACK_DAILY_LIMIT_REPLIES:
+            return random.choice(BLACK_DAILY_LIMIT_REPLIES).format(max=self.daily_max_checkins)
+        return random.choice(DAILY_LIMIT_REPLIES).format(max=self.daily_max_checkins)
+
+    def _help_reply(self, names: str, egg: bool = None) -> str:
+        if egg is None:
+            egg = self._black_egg()
+        if egg and BLACK_HELP_FEED:
+            return random.choice(BLACK_HELP_FEED).format(names=names)
+        return random.choice(HELP_FEED).format(names=names)
 
     # ------------------------------------------------------------ 成就
     async def _get_user_achievement_stats(self, user_id: str) -> dict:
@@ -279,7 +432,8 @@ class CakeDeniaPlugin(Star):
                 row = await cursor.fetchone()
                 stats['total_days'] = row[0] if row else 0
                 cursor = await conn.execute(
-                    "SELECT COALESCE(MAX(cake_count),0) FROM checkin WHERE user_id = ?",
+                    "SELECT COALESCE(MAX(daily),0) FROM ("
+                    "SELECT SUM(cake_count) AS daily FROM checkin WHERE user_id = ? GROUP BY checkin_date)",
                     (user_id,))
                 row = await cursor.fetchone()
                 stats['max_daily'] = row[0] if row else 0
@@ -300,7 +454,7 @@ class CakeDeniaPlugin(Star):
                 row = await cursor3.fetchone()
                 stats['total_received'] = row[0] if row else 0
                 if day_set:
-                    cur = date.today()
+                    cur = datetime.strptime(self._get_adjusted_date(), "%Y-%m-%d").date()
                     streak = 0
                     while cur.strftime("%Y-%m-%d") in day_set:
                         streak += 1
@@ -334,10 +488,25 @@ class CakeDeniaPlugin(Star):
         return new_achievements
 
     # ------------------------------------------------------------ LLM
+    async def _rollback_llm_placeholder(self, user_key, count_key):
+        """回滚 LLM 触发占位（删用户标记、递减全群计数），供空回复/异常路径复用。"""
+        try:
+            async with aiosqlite.connect(self.db_path, timeout=5.0) as conn:
+                await conn.execute("DELETE FROM metadata WHERE key = ?", (user_key,))
+                await conn.execute(
+                    "UPDATE metadata SET value = CAST(CAST(value AS INTEGER) - 1 AS TEXT) "
+                    "WHERE key = ? AND CAST(value AS INTEGER) > 0",
+                    (count_key,))
+                await conn.commit()
+        except Exception as e:
+            logger.error(f"回滚 LLM 占位失败: {e}")
+
     async def _maybe_llm_reply(self, user_id: str, adjusted_date: str):
-        """条件触发娅娅 LLM 回复：今日累计达阈值 + 概率命中 + 次数限制。"""
+        """条件触发娅娅 LLM 回复：今日累计达阈值 + 概率命中 + 原子占用次数上限。"""
         if not self.llm_enabled:
             return None
+        user_key = None
+        count_key = None
         try:
             if self.llm_daily_min_cakes > 0:
                 async with aiosqlite.connect(self.db_path) as conn:
@@ -348,45 +517,52 @@ class CakeDeniaPlugin(Star):
                     today_total = row[0] if row else 0
                 if today_total < self.llm_daily_min_cakes:
                     return None
-            user_key = f"llm_user:{user_id}:{adjusted_date}"
-            count_key = f"llm_count:{adjusted_date}"
-            async with aiosqlite.connect(self.db_path) as conn:
-                cursor = await conn.execute(
-                    "SELECT value FROM metadata WHERE key = ?", (user_key,))
-                row = await cursor.fetchone()
-                if row:
-                    return None  # 该用户今日已触发过
-                cursor = await conn.execute(
-                    "SELECT value FROM metadata WHERE key = ?", (count_key,))
-                row = await cursor.fetchone()
-                global_count = int(row[0]) if row and row[0] else 0
-                if self.llm_daily_limit > 0 and global_count >= self.llm_daily_limit:
-                    return None
             if random.random() >= self.llm_trigger_probability:
                 return None
+            # 原子占位：user_key 未占用 且 count_key 未达上限 才成功（与每日限额同思路）
+            user_key = f"llm_user:{user_id}:{adjusted_date}"
+            count_key = f"llm_count:{adjusted_date}"
+            async with aiosqlite.connect(self.db_path, timeout=5.0) as conn:
+                cur1 = await conn.execute(
+                    "INSERT INTO metadata (key, value) VALUES (?, ?) ON CONFLICT(key) DO NOTHING",
+                    (user_key, adjusted_date))
+                if cur1.rowcount == 0:
+                    return None  # 该用户今日已触发过
+                if self.llm_daily_limit > 0:
+                    cur2 = await conn.execute(
+                        "INSERT INTO metadata (key, value) VALUES (?, '1') "
+                        "ON CONFLICT(key) DO UPDATE SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT) "
+                        "WHERE CAST(CAST(value AS INTEGER) AS INTEGER) < ?",
+                        (count_key, self.llm_daily_limit))
+                    if cur2.rowcount == 0:
+                        await conn.execute("DELETE FROM metadata WHERE key = ?", (user_key,))
+                        await conn.commit()
+                        return None  # 全群每日上限已满
+                else:
+                    await conn.execute(
+                        "INSERT INTO metadata (key, value) VALUES (?, '1') "
+                        "ON CONFLICT(key) DO UPDATE SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT)",
+                        (count_key,))
+                await conn.commit()
             provider = await self.context.get_using_provider_async()
             resp = await provider.text_chat(
                 prompt=LLM_USER_PROMPT, system_prompt=LLM_SYSTEM_PROMPT)
             text = (getattr(resp, 'completion_text', '') or '').strip()
             if not text:
+                # 占位回滚，避免空回复白占次数
+                await self._rollback_llm_placeholder(user_key, count_key)
                 return None
-            async with aiosqlite.connect(self.db_path) as conn:
-                await conn.execute(
-                    "INSERT INTO metadata (key, value) VALUES (?, ?) "
-                    "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-                    (user_key, adjusted_date))
-                await conn.execute(
-                    "INSERT INTO metadata (key, value) VALUES (?, ?) "
-                    "ON CONFLICT(key) DO UPDATE SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT)",
-                    (count_key, str(global_count + 1)))
-                await conn.commit()
             return text
         except Exception as e:
             logger.error(f"娅娅 LLM 对话失败: {e}")
+            if user_key:
+                # 占位已写入但后续（provider/网络等）失败，回滚避免吞掉当日触发机会
+                await self._rollback_llm_placeholder(user_key, count_key)
             return None
 
-    @filter.regex(r'^[🍰蛋糕]成就$', description='查看娅娅成就墙')
+    @filter.custom_filter(trigger_filter(r'成就$'), description='查看娅娅成就墙')
     async def handle_cake_achievements(self, event: AstrMessageEvent):
+        """查看娅娅成就墙：列出全部成就的解锁/未解锁状态与当前进度。"""
         await self._ensure_initialized()
         if not await self._check_group_and_blacklist(event):
             return
@@ -400,29 +576,36 @@ class CakeDeniaPlugin(Star):
                 rows = await cursor.fetchall()
         except Exception as e:
             logger.error(f"查询成就失败: {e}")
-            yield event.plain_result("查询成就失败了 >_<")
+            yield event.plain_result(ACHIEVEMENTS_ERROR)
             return
         unlocked = {r[0] for r in rows}
         stats = await self._get_user_achievement_stats(user_id)
-        lines = [f"🏆 {user_name} 的娅娅成就墙（{len(unlocked)}/{len(ACHIEVEMENTS)}）"]
+        lines = [ACHIEVEMENTS_TITLE.format(name=user_name, unlocked=len(unlocked),
+                                           total=len(ACHIEVEMENTS))]
         lines.append("")
         for aid, meta in ACHIEVEMENTS.items():
             if aid in unlocked:
-                lines.append(f"{meta['icon']} ✅ {meta['name']}：{meta['desc']}")
+                lines.append(ACHIEVEMENT_UNLOCKED_LINE.format(
+                    icon=meta['icon'], name=meta['name'], desc=meta['desc']))
             else:
-                lines.append(f"{meta['icon']} 🔒 {meta['name']}：{meta['desc']}")
+                lines.append(ACHIEVEMENT_LOCKED.format(
+                    icon=meta['icon'], name=meta['name'], desc=meta['desc']))
         lines.append("")
-        lines.append(f"当前进度：累计 {stats['total_cakes']} 块 · 连续 {stats['streak']} 天 · 替喂 {stats['total_helped']} 块")
+        lines.append(ACHIEVEMENTS_PROGRESS.format(
+            total_cakes=stats['total_cakes'], streak=stats['streak'],
+            total_helped=stats['total_helped']))
         yield event.plain_result("\n".join(lines))
 
-    @filter.regex(r'^[🍰蛋糕]+(\s+|$)', description='🍰/蛋糕 喂娅娅小蛋糕')
+    @filter.custom_filter(trigger_filter(r'+(\s+|$)', char_class=True), description='🍰/蛋糕 喂娅娅小蛋糕')
     async def handle_cake_checkin(self, event: AstrMessageEvent):
+        """喂娅娅小蛋糕：发送 🍰/蛋糕 计数并生成日历图；@某人 为替喂，超限提示娅娅吃不下。"""
         await self._ensure_initialized()
         if not await self._check_group_and_blacklist(event):
             return
         text = event.get_message_str()
-        m_prefix = re.match(r'^[🍰蛋糕]+', text)
-        raw_cake_count = len(m_prefix.group(0)) if m_prefix else 0
+        raw_cake_count = self._count_trigger_chars(text)
+        if raw_cake_count <= 0:
+            return  # 前缀只是触发词的部分字符（非完整词），静默忽略
         too_many = raw_cake_count > self.max_cakes_per_message
         cake_count = min(raw_cake_count, self.max_cakes_per_message)
         user_id = str(event.get_sender_id())
@@ -432,6 +615,14 @@ class CakeDeniaPlugin(Star):
         targets = self._get_at_targets(event)
 
         if targets:
+            # 帮喂也计入每日次数限额（原子占用一次额度）
+            daily_op = await self._try_consume_daily_op(user_id, group_id, adjusted_date)
+            if daily_op is None:
+                yield event.plain_result(CHECKIN_ERROR)
+                return
+            if not daily_op:
+                yield event.plain_result(self._daily_limit_reply())
+                return
             for target_id in targets:
                 try:
                     async with aiosqlite.connect(self.db_path) as conn:
@@ -446,9 +637,11 @@ class CakeDeniaPlugin(Star):
             for target_id in targets:
                 name = await self.core._get_user_name(event, target_id)
                 at_names.append(name)
-            chain = [Plain(HELP_FEED.format(names='、'.join(at_names)))]
+            egg = self._black_egg()
+            help_text = self._help_reply('、'.join(at_names), egg)
+            chain = [Plain(help_text)]
             if too_many:
-                chain.append(Plain(self._feed_too_many()))
+                chain.append(Plain(self._feed_too_many(egg)))
             # 帮喂成就：helper 的替喂成就 + 每个 target 的被喂成就
             for ach_uid in [user_id] + list(targets):
                 try:
@@ -460,7 +653,7 @@ class CakeDeniaPlugin(Star):
                 try:
                     target_name = await self.core._get_user_name(event, target_id)
                     result = await self.core._generate_and_send_calendar(
-                        event, target_id, target_name, self.db_path, adjusted_date)
+                        event, target_id, target_name, self.db_path, adjusted_date, dark=egg)
                     if result[1]:
                         chain.append(Image(file=result[1]))
                     elif result[0]:
@@ -469,28 +662,16 @@ class CakeDeniaPlugin(Star):
                     logger.error(f"生成被喂者日历失败: {e}")
             yield event.chain_result(chain)
         else:
+            # 每日次数限额（原子占用一次额度，每条喂蛋糕消息算 1 次）
+            daily_op = await self._try_consume_daily_op(user_id, group_id, adjusted_date)
+            if daily_op is None:
+                yield event.plain_result(CHECKIN_ERROR)
+                return
+            if not daily_op:
+                yield event.plain_result(self._daily_limit_reply())
+                return
             try:
                 async with aiosqlite.connect(self.db_path) as conn:
-                    cursor = await conn.execute(
-                        "SELECT COALESCE(SUM(cake_count), 0) FROM checkin WHERE user_id = ? AND group_id = ? AND checkin_date = ?",
-                        (user_id, group_id, adjusted_date))
-                    row = await cursor.fetchone()
-                    daily_total = row[0] if row else 0
-
-                    month_str = adjusted_date[:7]
-                    cursor = await conn.execute(
-                        "SELECT COALESCE(SUM(cake_count), 0) FROM checkin WHERE user_id = ? AND group_id = ? AND strftime('%Y-%m', checkin_date) = ?",
-                        (user_id, group_id, month_str))
-                    row = await cursor.fetchone()
-                    monthly_total = row[0] if row else 0
-
-                    if self.daily_max_checkins > 0 and daily_total + cake_count > self.daily_max_checkins:
-                        yield event.plain_result(f"娅娅一天最多吃 {self.daily_max_checkins} 块蛋糕，今天的额度已经用完啦！")
-                        return
-                    if self.monthly_max_checkins > 0 and monthly_total + cake_count > self.monthly_max_checkins:
-                        yield event.plain_result(f"娅娅一个月最多吃 {self.monthly_max_checkins} 块蛋糕，本月额度已经用完啦！")
-                        return
-
                     await conn.execute(
                         "INSERT INTO checkin (user_id, group_id, checkin_date, cake_count) VALUES (?, ?, ?, ?) "
                         "ON CONFLICT(user_id, group_id, checkin_date) DO UPDATE SET cake_count = cake_count + ?",
@@ -498,63 +679,78 @@ class CakeDeniaPlugin(Star):
                     await conn.commit()
             except Exception as e:
                 logger.error(f"喂蛋糕失败: {e}")
-                yield event.plain_result("喂蛋糕失败了，数据库出错了 >_<")
+                yield event.plain_result(CHECKIN_ERROR)
                 return
 
+            egg = self._black_egg()
             result = await self.core._generate_and_send_calendar(
-                event, user_id, user_name, self.db_path, adjusted_date)
+                event, user_id, user_name, self.db_path, adjusted_date, dark=egg)
 
             # 成就检查：累计/单日/连续
             new_achievements = await self._check_and_unlock_achievements(user_id)
             ach_texts = [ACHIEVEMENT_UNLOCK.format(icon=a['icon'], name=a['name'], desc=a['desc'])
                          for a in new_achievements]
-            # LLM 概率对话
-            llm_text = await self._maybe_llm_reply(user_id, adjusted_date)
+            # LLM 概率对话（触发达妮娅彩蛋时禁用，保持神秘感）
+            llm_text = None if egg else await self._maybe_llm_reply(user_id, adjusted_date)
 
             chain = []
             if result[2]:
                 chain.append(Plain(result[0]))
             elif result[1]:
-                chain.append(Plain(self._feed_reply(cake_count)))
+                chain.append(Plain(self._feed_reply(cake_count, egg)))
                 chain.append(Image(file=result[1]))
             else:
-                chain.append(Plain(result[0] or self._feed_reply(cake_count)))
+                chain.append(Plain(result[0] or self._feed_reply(cake_count, egg)))
             if too_many:
-                chain.append(Plain(self._feed_too_many()))
+                chain.append(Plain(self._feed_too_many(egg)))
             for t in ach_texts:
                 chain.append(Plain(t))
             if llm_text:
-                chain.append(Plain(f"娅娅有话想对你说——\n{llm_text}"))
+                chain.append(Plain(LLM_REPLY_PREFIX.format(text=llm_text)))
             yield event.chain_result(chain)
 
-    @filter.regex(r'^[🍰蛋糕]补签\s+(\d{1,2})(?:\s+(\d+))?\s*$', description='🍰补签')
+    @filter.custom_filter(trigger_filter(r'补签\s+\d{1,2}(?:\s+\d+)?\s*$'), description='🍰补签')
     async def handle_cake_retro(self, event: AstrMessageEvent):
+        """补签：🍰补签 DD [次数]，为本月某天补喂蛋糕（不能补未来日期）。"""
         await self._ensure_initialized()
         if not await self._check_group_and_blacklist(event):
             return
         user_id = str(event.get_sender_id())
-        text = event.get_message_str().strip()
-        m = re.match(r'^[🍰蛋糕]补签\s+(\d{1,2})(?:\s+(\d+))?\s*$', text)
+        rest = self._after_trigger(event.get_message_str().strip())
+        if rest is None:
+            return
+        m = re.match(r'^补签\s+(\d{1,2})(?:\s+(\d+))?\s*$', rest)
         if not m:
-            yield event.plain_result("格式错误，例：🍰补签 5 或 🍰补签 5 3")
+            yield event.plain_result(RETRO_FORMAT_ERR)
             return
         day = int(m.group(1))
         raw_count = int(m.group(2)) if m.group(2) else 1
         too_many = raw_count > self.max_cakes_per_message
         count = min(raw_count, self.max_cakes_per_message)
-        today = date.today()
-        year, month = today.year, today.month
+        # 以调整日（含 day_start_time）为基准：凌晨 day_start 前算前一天，补签不能越过它
+        today_adj = self._get_adjusted_date()
+        today_adj_dt = datetime.strptime(today_adj, "%Y-%m-%d").date()
+        year, month = today_adj_dt.year, today_adj_dt.month
         days_in_month = calendar.monthrange(year, month)[1]
         if day < 1 or day > days_in_month:
-            yield event.plain_result(f"日期不合法，本月只有 {days_in_month} 天")
+            yield event.plain_result(RETRO_INVALID_DAY.format(days=days_in_month))
             return
-        if day > today.day:
-            yield event.plain_result("不能补签未来的日期")
+        if day > today_adj_dt.day:
+            yield event.plain_result(RETRO_FUTURE)
             return
 
         adjusted_date = f"{year}-{month:02d}-{day:02d}"
+        group_id = str(event.get_group_id() or '')
+        # 补签操作也占用今天的喂蛋糕次数（原子占用）
+        today_ops_date = self._get_adjusted_date()
+        daily_op = await self._try_consume_daily_op(user_id, group_id, today_ops_date)
+        if daily_op is None:
+            yield event.plain_result(RETRO_ERROR)
+            return
+        if not daily_op:
+            yield event.plain_result(self._daily_limit_reply())
+            return
         try:
-            group_id = str(event.get_group_id() or '')
             async with aiosqlite.connect(self.db_path) as conn:
                 await conn.execute(
                     "INSERT INTO checkin (user_id, group_id, checkin_date, cake_count) VALUES (?, ?, ?, ?) "
@@ -563,33 +759,35 @@ class CakeDeniaPlugin(Star):
                 await conn.commit()
         except Exception as e:
             logger.error(f"补签失败: {e}")
-            yield event.plain_result("补签失败了 >_<")
+            yield event.plain_result(RETRO_ERROR)
             return
 
         user_name = await self.core._get_user_name(event, user_id)
+        egg = self._black_egg()
         new_achievements = await self._check_and_unlock_achievements(user_id)
         ach_texts = [ACHIEVEMENT_UNLOCK.format(icon=a['icon'], name=a['name'], desc=a['desc'])
                      for a in new_achievements]
         result = await self.core._generate_and_send_calendar(
-            event, user_id, user_name, self.db_path)
+            event, user_id, user_name, self.db_path, dark=egg)
         chain = []
         if result[0]:
             chain.append(Plain(result[0]))
         elif result[1]:
             chain.append(Image(file=result[1]))
         if too_many:
-            chain.append(Plain(self._feed_too_many()))
+            chain.append(Plain(self._feed_too_many(egg)))
         for t in ach_texts:
             chain.append(Plain(t))
         yield event.chain_result(chain)
 
-    @filter.regex(r'^[🍰蛋糕]重置榜单(\s.*)?$', description='清空今天的喂蛋糕计数（可@他人）')
+    @filter.custom_filter(trigger_filter(r'重置榜单(\s.*)?$'), description='清空今天的喂蛋糕计数（可@他人）')
     async def handle_cake_reset(self, event: AstrMessageEvent):
+        """重置榜单：管理员清空今天（或 @他人）的喂蛋糕计数。"""
         await self._ensure_initialized()
         if not await self._check_group_and_blacklist(event):
             return
-        if getattr(event, 'role', 'member') != 'admin':
-            yield event.plain_result("要做一个诚实的好孩子哦，重置需要管理员权限～")
+        if not await self._is_group_admin(event, str(event.get_group_id() or ''), str(event.get_sender_id())):
+            yield event.plain_result(RESET_ADMIN_ONLY)
             return
         targets = self._get_at_targets(event)
         if targets:
@@ -611,15 +809,17 @@ class CakeDeniaPlugin(Star):
                     (user_id, group_id, adjusted_date))
                 await conn.commit()
             if row:
-                yield event.plain_result(f"已重置{who}今天（{adjusted_date}）的喂蛋糕计数，共清除 {row[0]} 块。")
+                yield event.plain_result(RESET_DONE.format(
+                    who=who, date=adjusted_date, count=row[0]))
             else:
-                yield event.plain_result("今天还没有喂蛋糕记录，无需重置。")
+                yield event.plain_result(RESET_EMPTY)
         except Exception as e:
             logger.error(f"重置失败: {e}")
-            yield event.plain_result("重置失败，数据库出错了 >_<")
+            yield event.plain_result(RESET_ERROR)
 
-    @filter.regex(r'^[🍰蛋糕]日历$', description='查看娅娅本月日历')
+    @filter.custom_filter(trigger_filter(r'日历$'), description='查看娅娅本月日历')
     async def handle_cake_calendar(self, event: AstrMessageEvent):
+        """查看娅娅本月日历：生成粉色系（或所选主题）投喂日历图。"""
         await self._ensure_initialized()
         if not await self._check_group_and_blacklist(event):
             return
@@ -633,16 +833,22 @@ class CakeDeniaPlugin(Star):
         elif result[1]:
             yield event.image_result(result[1])
 
-    @filter.regex(r'^[🍰蛋糕](?:报告|分析)(?:\s+(\d{2}|\d{4}))?$', description='🍰报告/分析')
+    @filter.custom_filter(trigger_filter(r'(?:报告|分析)(?:\s+\d{2}|\s+\d{4})?$'), description='🍰报告/分析')
     async def handle_cake_analysis(self, event: AstrMessageEvent):
+        """投喂分析报告：本月 / 指定月份 / 指定年份的娅娅投喂数据分析图。"""
         await self._ensure_initialized()
         if not await self._check_group_and_blacklist(event):
             return
         user_id = str(event.get_sender_id())
         user_name = await self.core._get_user_name(event, user_id)
-        text = event.get_message_str().strip()
-        m = re.match(r'^[🍰蛋糕](?:报告|分析)\s*(\d{2}|\d{4})?$', text)
-        param = m.group(1) if m and m.group(1) else None
+        rest = self._after_trigger(event.get_message_str().strip())
+        if rest is None:
+            return
+        m = re.match(r'^(?:报告|分析)\s*(\d{2}|\d{4})?$', rest)
+        if m is None:
+            yield event.plain_result(ANALYSIS_BAD_MONTH)
+            return
+        param = m.group(1)
 
         today = date.today()
         if param is None:
@@ -655,7 +861,7 @@ class CakeDeniaPlugin(Star):
             month = int(param)
             year = today.year
             if month < 1 or month > 12:
-                yield event.plain_result("月份格式不对，请输入 01-12")
+                yield event.plain_result(ANALYSIS_BAD_MONTH)
                 return
             period_data = await self.core._get_user_period_data(user_id, year, month)
             report, rate = await self.core._generate_monthly_analysis_report(
@@ -670,7 +876,7 @@ class CakeDeniaPlugin(Star):
             target_period = f"{year}年"
 
         if not report:
-            yield event.plain_result("还没有喂蛋糕记录，先给娅娅喂一块吧！发送 🍰")
+            yield event.plain_result(NO_RECORD)
             return
 
         try:
@@ -682,8 +888,9 @@ class CakeDeniaPlugin(Star):
             logger.error(f"生成娅娅投喂报告图片失败: {e}")
             yield event.plain_result(report)
 
-    @filter.regex(r'^[🍰蛋糕]生涯$', description='娅娅生涯档案')
+    @filter.custom_filter(trigger_filter(r'生涯$'), description='娅娅生涯档案')
     async def handle_cake_career(self, event: AstrMessageEvent):
+        """娅娅生涯档案：累计投喂 / 单日之最 / 最长断喂等数据总览图。"""
         await self._ensure_initialized()
         if not await self._check_group_and_blacklist(event):
             return
@@ -698,14 +905,19 @@ class CakeDeniaPlugin(Star):
                 rows = await cursor.fetchall()
         except Exception as e:
             logger.error(f"查询生涯数据失败: {e}")
-            yield event.plain_result("查询生涯数据失败 >_<")
+            yield event.plain_result(CAREER_ERROR)
             return
 
         if not rows:
-            yield event.plain_result("还没有喂蛋糕记录，先给娅娅喂一块吧！发送 🍰")
+            yield event.plain_result(NO_RECORD)
             return
 
-        stats = self._compute_career_stats(rows)
+        try:
+            stats = self._compute_career_stats(rows)
+        except Exception as e:
+            logger.error(f"计算生涯数据失败: {e}")
+            yield event.plain_result(CAREER_ERROR)
+            return
         try:
             image_path = await asyncio.to_thread(
                 self.core._create_career_image,
@@ -713,7 +925,7 @@ class CakeDeniaPlugin(Star):
             yield event.image_result(image_path)
         except Exception as e:
             logger.error(f"生成生涯图片失败: {e}")
-            yield event.plain_result("生成生涯图片失败 >_<")
+            yield event.plain_result(CAREER_IMG_ERROR)
 
     def _compute_career_stats(self, rows):
         total_count = sum(row[1] for row in rows) if rows else 0
@@ -759,38 +971,35 @@ class CakeDeniaPlugin(Star):
                 max_gap = gap
                 gap_start = all_dates[i - 1]
         if max_gap.days > 0:
-            rest_period_str = f"从 {gap_start} 开始，长达 {max_gap.days} 天没给娅娅喂蛋糕，她的泡泡都蔫了"
+            rest_period_str = CAREER_REST_GAP.format(start=gap_start, days=max_gap.days)
         else:
-            rest_period_str = "每天都在坚持投喂，娅娅的泡泡每天都亮晶晶的"
+            rest_period_str = CAREER_REST_ALWAYS
 
         if min_month_count == 0:
-            sage_comment = "这个月娅娅饿得泡泡都破了！"
+            sage_comment = CAREER_SAGE_ZERO
         elif min_month_count <= 2:
-            sage_comment = "最少月份娅娅只尝到一点点甜"
+            sage_comment = CAREER_SAGE_LOW
         else:
             sage_comment = ""
 
         last_date = datetime.strptime(rows[-1][0], "%Y-%m-%d").date()
         status_day = (today - last_date).days
         if status_day == 0:
-            status_comment = "今天已经喂过娅娅了，她抱着泡泡笑得很开心！"
+            status_comment = CAREER_STATUS_0
         elif status_day <= 3:
-            status_comment = f"已经 {status_day} 天没喂娅娅了，她在虚质科学部门口懒懒地张望"
+            status_comment = CAREER_STATUS_LE3.format(days=status_day)
         elif status_day <= 7:
-            status_comment = f"已经 {status_day} 天没喂娅娅了，她打盹时总梦见小蛋糕"
+            status_comment = CAREER_STATUS_LE7.format(days=status_day)
         elif status_day <= 30:
-            status_comment = f"已经 {status_day} 天没喂娅娅了，她开始数着泡泡等你"
+            status_comment = CAREER_STATUS_LE30.format(days=status_day)
         else:
-            status_comment = f"已经 {status_day} 天没喂娅娅了，她神秘地笑了笑：有些事情，还是不知道比较幸福哦？"
+            status_comment = CAREER_STATUS_OVER.format(days=status_day)
 
-        if daily_avg > 1.5:
-            summary_comment = "海啸级投喂手"
-        elif daily_avg > 0.8:
-            summary_comment = "虚质甜点师"
-        elif daily_avg > 0.3:
-            summary_comment = "娅娅的好朋友"
-        else:
-            summary_comment = "甜蜜守护者"
+        summary_comment = CAREER_SUMMARY_LEVELS[-1][1]
+        for threshold, label in CAREER_SUMMARY_LEVELS:
+            if daily_avg > threshold:
+                summary_comment = label
+                break
 
         return {
             'summary_comment': summary_comment,
@@ -812,14 +1021,16 @@ class CakeDeniaPlugin(Star):
             'status_comment': status_comment,
         }
 
-    async def _format_ranking(self, event, raw_data):
-        cache = {}
+    async def _format_ranking(self, event, raw_data, name_map=None):
+        """格式化榜单。name_map（uid→昵称）提供时直接用，避免逐个 API 查询。"""
         result = []
         for idx, (uid, count) in enumerate(raw_data, 1):
             uid = str(uid)
-            if uid not in cache:
-                cache[uid] = await self.core._get_user_name(event, uid)
-            result.append((idx, uid, cache[uid], count))
+            if name_map is not None:
+                name = name_map.get(uid, uid)
+            else:
+                name = await self.core._get_user_name(event, uid)
+            result.append((idx, uid, name, count))
         return result
 
     async def _get_achievement_counts(self, user_ids: set) -> dict:
@@ -838,32 +1049,41 @@ class CakeDeniaPlugin(Star):
             logger.error(f"查询成就徽章数失败: {e}")
         return ach_map
 
-    async def _download_all_avatars(self, all_data_lists):
-        all_uids = set()
-        for data_list in all_data_lists:
-            for _, uid, _, _ in data_list:
-                all_uids.add(uid)
-        for uid in all_uids:
-            save_path = os.path.join(self.avatar_dir, f"{uid}.png")
-            if not os.path.exists(save_path):
-                await self._download_avatar(uid, save_path)
-
-    async def _download_avatar(self, qq_id: str, save_path: str) -> bool:
+    def _download_avatar_sync(self, qq_id: str, save_path: str) -> bool:
+        """同步下载头像到文件（由调用方 to_thread 包装，避免阻塞事件循环）。"""
         import urllib.request
         url = f"https://q1.qlogo.cn/g?b=qq&nk={qq_id}&s=640"
         try:
             req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
             with urllib.request.urlopen(req, timeout=5) as resp:
                 data = resp.read()
-            with open(save_path, 'wb') as f:
-                f.write(data)
-            return True
+            if data:
+                with open(save_path, 'wb') as f:
+                    f.write(data)
+                return True
         except Exception as e:
             logger.error(f"下载头像 {qq_id} 失败: {e}")
-            return False
+        return False
 
-    @filter.regex(r'^(?:查看|查询)?[🍰蛋糕]榜(\s+\d+)?$|^[🍰蛋糕][日月]榜(\s+\d+)?$', description='🍰排行榜')
+    async def _download_all_avatars(self, all_data_lists):
+        """并发下载本页用户头像到 avatar_dir（排行榜渲染时调用）。"""
+        pending = set()
+        for data_list in all_data_lists:
+            for row in data_list:
+                uid = str(row[1])
+                save_path = os.path.join(self.avatar_dir, f"{uid}.png")
+                if not os.path.exists(save_path):
+                    pending.add((uid, save_path))
+        if not pending:
+            return
+        await asyncio.gather(*[
+            asyncio.to_thread(self._download_avatar_sync, uid, path)
+            for uid, path in pending
+        ])
+
+    @filter.custom_filter(trigger_filter(r'(?:榜(\s+\d+)?$|[日月]榜(\s+\d+)?$)', prefix='查看|查询'), description='🍰排行榜')
     async def handle_cake_ranking(self, event: AstrMessageEvent):
+        """排行榜：自己喂 / 被喂 / 替喂 × 今日 / 本月三栏排行图，支持翻页。"""
         await self._ensure_initialized()
         if not await self._check_group_and_blacklist(event):
             return
@@ -875,12 +1095,12 @@ class CakeDeniaPlugin(Star):
 
         group_id = event.get_group_id()
         if not group_id:
-            yield event.plain_result("排行榜仅支持群聊使用")
+            yield event.plain_result(RANKING_GROUP_ONLY)
             return
 
         members = await self.core._get_group_members(event, str(group_id))
         if not members:
-            yield event.plain_result("无法获取群成员信息，请稍后再试")
+            yield event.plain_result(RANKING_NO_MEMBERS)
             return
         group_user_ids = {str(m.get('user_id')) for m in members}
 
@@ -889,35 +1109,41 @@ class CakeDeniaPlugin(Star):
         adjusted_date_str = self._get_adjusted_date()
         month_str = f"{year}-{month_val:02d}"
 
-        today_condition = f"checkin_date = '{adjusted_date_str}'"
-        month_condition = f"strftime('%Y-%m', checkin_date) = '{month_str}'"
-        today_help_condition = f"date = '{adjusted_date_str}'"
-        month_help_condition = f"strftime('%Y-%m', date) = '{month_str}'"
-
         raw_today_self = await self.core._get_period_ranking_data(
-            self.db_path, today_condition, group_user_ids, str(group_id))
+            self.db_path, "checkin_date = ?", (adjusted_date_str,), group_user_ids, str(group_id))
         raw_today_received = await self.core._get_received_ranking_data(
-            self.db_path, today_help_condition, group_user_ids, str(group_id))
+            self.db_path, "date = ?", (adjusted_date_str,), group_user_ids, str(group_id))
         raw_today_helped = await self.core._get_help_ranking_data(
-            self.db_path, today_help_condition, group_user_ids, str(group_id))
+            self.db_path, "date = ?", (adjusted_date_str,), group_user_ids, str(group_id))
 
         raw_month_self = await self.core._get_period_ranking_data(
-            self.db_path, month_condition, group_user_ids, str(group_id))
+            self.db_path, "strftime('%Y-%m', checkin_date) = ?", (month_str,), group_user_ids, str(group_id))
         raw_month_received = await self.core._get_received_ranking_data(
-            self.db_path, month_help_condition, group_user_ids, str(group_id))
+            self.db_path, "strftime('%Y-%m', date) = ?", (month_str,), group_user_ids, str(group_id))
         raw_month_helped = await self.core._get_help_ranking_data(
-            self.db_path, month_help_condition, group_user_ids, str(group_id))
+            self.db_path, "strftime('%Y-%m', date) = ?", (month_str,), group_user_ids, str(group_id))
 
-        today_self = await self._format_ranking(event, raw_today_self)
-        today_received = await self._format_ranking(event, raw_today_received)
-        today_helped = await self._format_ranking(event, raw_today_helped)
-        month_self = await self._format_ranking(event, raw_month_self)
-        month_received = await self._format_ranking(event, raw_month_received)
-        month_helped = await self._format_ranking(event, raw_month_helped)
+        # 批量昵称映射（用群成员列表一次取回，避免逐个 API 查询）
+        name_map = {
+            str(m.get('user_id')): (str(m.get('card') or m.get('nickname') or m.get('user_id')))
+            for m in members
+        }
+        today_self = await self._format_ranking(event, raw_today_self, name_map)
+        today_received = await self._format_ranking(event, raw_today_received, name_map)
+        today_helped = await self._format_ranking(event, raw_today_helped, name_map)
+        month_self = await self._format_ranking(event, raw_month_self, name_map)
+        month_received = await self._format_ranking(event, raw_month_received, name_map)
+        month_helped = await self._format_ranking(event, raw_month_helped, name_map)
 
         page_size = max(int(self.ranking_display_count or 10), 1)
-        paginate = lambda d, p: d[(p-1)*page_size:p*page_size]
+        max_len = max(
+            len(raw_today_self), len(raw_today_received), len(raw_today_helped),
+            len(raw_month_self), len(raw_month_received), len(raw_month_helped))
+        total_pages = max(math.ceil(max_len / page_size), 1)
+        if page > total_pages:
+            page = total_pages
 
+        paginate = lambda d, p: d[(p - 1) * page_size:p * page_size]
         today_self_page = paginate(today_self, page)
         today_received_page = paginate(today_received, page)
         today_helped_page = paginate(today_helped, page)
@@ -938,23 +1164,27 @@ class CakeDeniaPlugin(Star):
         month_received_page = enrich(month_received_page)
         month_helped_page = enrich(month_helped_page)
 
-        max_len = max(
-            len(raw_today_self), len(raw_today_received), len(raw_today_helped),
-            len(raw_month_self), len(raw_month_received), len(raw_month_helped))
-        total_pages = max(math.ceil(max_len / page_size), 1)
-        if page > total_pages:
-            page = total_pages
+        # 下载本页用户头像（排行榜渲染用），仅 QQ 平台有效
+        if event.get_platform_name() == "aiocqhttp":
+            try:
+                await self._download_all_avatars(
+                    (today_self_page, today_received_page, today_helped_page,
+                     month_self_page, month_received_page, month_helped_page))
+            except Exception as e:
+                logger.error(f"下载排行头像失败: {e}")
 
+        image_path = None
         try:
             image_path = await asyncio.to_thread(
                 self.core._create_three_column_ranking_image,
                 today_self_page, today_received_page, today_helped_page,
                 month_self_page, month_received_page, month_helped_page,
-                year, month_val, page, total_pages, "🍰", self.avatar_dir, ach_map)
+                year, month_val, page, total_pages, "🍰", self.avatar_dir, ach_map,
+                max_rows=page_size)
             yield event.image_result(image_path)
         except Exception as e:
             logger.error(f"生成排行榜图片失败: {e}")
-            yield event.plain_result("生成排行榜失败 >_<")
+            yield event.plain_result(RANKING_ERROR)
         finally:
             if image_path and os.path.exists(image_path):
                 try:
@@ -962,20 +1192,10 @@ class CakeDeniaPlugin(Star):
                 except Exception:
                     pass
 
-    @filter.regex(r'^[🍰蛋糕]帮助$', description='🍰帮助')
+    @filter.custom_filter(trigger_filter(r'帮助$'), description='🍰帮助')
     async def handle_cake_help(self, event: AstrMessageEvent):
-        help_text = """🍰 娅娅喂蛋糕使用帮助 🍰
-
-[🍰蛋糕] + 数量 → 给娅娅喂蛋糕（例：🍰🍰🍰）
-[🍰蛋糕] + @某人 → 替别人喂蛋糕
-[🍰蛋糕]日历 → 查看娅娅本月日历
-[🍰蛋糕]报告/分析 → 本月投喂报告
-[🍰蛋糕]报告/分析 MM → 指定月份报告
-[🍰蛋糕]报告/分析 YYYY → 指定年份报告
-[🍰蛋糕]生涯 → 投喂生涯档案
-[🍰蛋糕]补签 DD [数量] → 补签某天
-[🍰蛋糕]榜 [页码] → 查看排行榜（含成就徽章）
-[🍰蛋糕]成就 → 查看成就墙
-[🍰蛋糕]重置榜单 → 管理员重置今日计数
-[🍰蛋糕]帮助 → 本帮助"""
-        yield event.plain_result(help_text)
+        """帮助：列出全部喂蛋糕命令的使用说明。"""
+        await self._ensure_initialized()
+        if not await self._check_group_and_blacklist(event):
+            return
+        yield event.plain_result(HELP_TEXT)
