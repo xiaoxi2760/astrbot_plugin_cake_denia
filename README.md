@@ -75,6 +75,5 @@
 
 - `resources/texts.py`：娅娅文案集中文件。**随机回复池**（喂蛋糕/帮喂/吃不下/每日超限）与**双人格文案**（娅娅 + 达妮娅彩蛋各一组）都在这里，改文案只改这一个文件（改完重载插件生效）
 - `resources/fonts/font.ttf`：中文字体。**插件包不携带字体**（体积大），需自行下载放入；未放入时会自动尝试系统字体（微软雅黑/思源黑体/Noto Sans CJK），全部缺失时图片生成降级为文字回复，打卡计数不受影响。下载指引见 [resources/README.md](resources/README.md)
-- `resources/denia.png`：娅娅立绘图（建议正方形 PNG），放入后排行榜图顶部自动显示
 
 更多自定义（成就/主题/触发词）见 [resources/DIY.md](resources/DIY.md)。
