@@ -28,6 +28,7 @@ from .resources.texts import (
     BLACK_FEED_SUCCESS, BLACK_FEED_MULTI, BLACK_HELP_FEED,
     BLACK_FEED_TOO_MANY, BLACK_DAILY_LIMIT_REPLIES,
     LLM_SYSTEM_PROMPT, LLM_USER_PROMPT, LLM_REPLY_PREFIX,
+    FAVOUR_BOOST, FAVOUR_BOOST_TARGET,
     ACHIEVEMENT_UNLOCK, ACHIEVEMENTS_TITLE,
     ACHIEVEMENTS_PROGRESS, ACHIEVEMENTS_ERROR,
     ACHIEVEMENT_UNLOCKED_LINE, ACHIEVEMENT_LOCKED,
@@ -168,6 +169,7 @@ class CakeDeniaPlugin(Star):
         self._initialized = False
         self._init_lock = asyncio.Lock()
         self._last_maintenance = 0.0
+        self._favour_plugin_cached = None  # None=未探测，False=探测过未找到
 
     async def _ensure_initialized(self):
         if not self._initialized:
@@ -331,6 +333,94 @@ class CakeDeniaPlugin(Star):
     def _black_egg(self) -> bool:
         """达妮娅彩蛋：20% 概率随机出现，与日历主题无关。"""
         return random.random() < 0.2
+
+    # ------------------------------------------------------------ 好感度联动（Favour_Ultra）
+    def _find_favour_plugin(self):
+        """通过 star 注册表定位 Favour_Ultra 插件实例；未安装/未激活返回 None（结果缓存）。"""
+        if self._favour_plugin_cached is not None:
+            return self._favour_plugin_cached
+        try:
+            stars = self.context.get_all_stars()
+        except Exception:
+            self._favour_plugin_cached = False
+            return None
+        for meta in stars:
+            if getattr(meta, 'name', None) == 'astrbot_plugin_Favour_Ultra' and getattr(meta, 'star_cls', None) is not None:
+                self._favour_plugin_cached = meta.star_cls
+                return meta.star_cls
+        self._favour_plugin_cached = False
+        return None
+
+    async def _add_favour_boost(self, event: AstrMessageEvent, uid: str, adjusted_date: str):
+        """每日首次获得蛋糕时给 Favour_Ultra 好感度 +1~5；未安装/当日已加过/失败返回 None。
+
+        用 metadata 原子占位保证「每天每个用户只加一次」，不重复计。
+        """
+        plugin = self._find_favour_plugin()
+        if plugin is None:
+            return None
+        dbm = getattr(plugin, 'db_manager', None)
+        if dbm is None:
+            return None
+        key = f"favour_first:{uid}:{adjusted_date}"
+        try:
+            async with aiosqlite.connect(self.db_path, timeout=5.0) as conn:
+                cur = await conn.execute(
+                    "INSERT INTO metadata (key, value) VALUES (?, '1') ON CONFLICT(key) DO NOTHING",
+                    (key,))
+                await conn.commit()
+                if cur.rowcount == 0:
+                    return None  # 当日已获得过蛋糕，不重复加
+        except Exception as e:
+            logger.error(f"写入首喂标记失败: {e}")
+            return None
+        try:
+            is_global = bool(getattr(plugin, 'is_global_favour', False))
+            session_id = "global" if is_global else (getattr(event, 'unified_msg_origin', None) or "")
+            delta = random.randint(1, 5)
+            rec = await dbm.get_favour(uid, session_id)
+            old = rec.favour if rec else 0
+            min_v = getattr(plugin, 'min_favour_value', -100)
+            max_v = getattr(plugin, 'max_favour_value', 100)
+            new = max(min_v, min(max_v, old + delta))
+            await dbm.update_favour(uid, session_id, favour=new)
+            return delta
+        except Exception as e:
+            logger.error(f"联动好感度失败: {e}")
+            return None
+
+    async def get_cake_titles(self, user_ids) -> dict:
+        """供 Favour_Ultra 联动：批量返回用户的蛋糕生涯称号（uid -> 称号）。
+
+        口径与生涯档案一致（daily_avg → CAREER_SUMMARY_LEVELS）；无记录用户不出现在结果中。
+        """
+        result = {}
+        ids = [str(u) for u in user_ids]
+        if not ids:
+            return result
+        try:
+            placeholders = ",".join("?" * len(ids))
+            async with aiosqlite.connect(self.db_path) as conn:
+                cur = await conn.execute(
+                    f"SELECT user_id, checkin_date, SUM(cake_count) FROM checkin "
+                    f"WHERE user_id IN ({placeholders}) GROUP BY user_id, checkin_date "
+                    f"ORDER BY user_id, checkin_date",
+                    ids)
+                rows = await cur.fetchall()
+        except Exception as e:
+            logger.error(f"读取蛋糕数据失败: {e}")
+            return result
+        by_user = {}
+        for uid, d, cnt in rows:
+            by_user.setdefault(uid, []).append((d, cnt))
+        for uid, data in by_user.items():
+            try:
+                stats = self._compute_career_stats(data)
+                if stats:
+                    result[uid] = stats['summary_comment']
+            except Exception as e:
+                logger.error(f"计算用户 {uid} 蛋糕称号失败: {e}")
+        return result
 
     def _feed_reply(self, count: int, egg: bool = None) -> str:
         if egg is None:
@@ -624,6 +714,7 @@ class CakeDeniaPlugin(Star):
             if not daily_op:
                 yield event.plain_result(self._daily_limit_reply())
                 return
+            target_boosts = {}
             for target_id in targets:
                 try:
                     async with aiosqlite.connect(self.db_path) as conn:
@@ -634,6 +725,9 @@ class CakeDeniaPlugin(Star):
                         await conn.commit()
                 except Exception as e:
                     logger.error(f"帮喂蛋糕失败: {e}")
+                boost = await self._add_favour_boost(event, target_id, adjusted_date)
+                if boost:
+                    target_boosts[target_id] = boost
             at_names = []
             for target_id in targets:
                 name = await self.core._get_user_name(event, target_id)
@@ -643,6 +737,10 @@ class CakeDeniaPlugin(Star):
             chain = [Plain(help_text)]
             if too_many:
                 chain.append(Plain(self._feed_too_many(egg)))
+            for target_id, tname in zip(targets, at_names):
+                b = target_boosts.get(target_id)
+                if b:
+                    chain.append(Plain(FAVOUR_BOOST_TARGET.format(name=tname, n=b)))
             # 帮喂成就：helper 的替喂成就 + 每个 target 的被喂成就
             for ach_uid in [user_id] + list(targets):
                 try:
@@ -684,6 +782,7 @@ class CakeDeniaPlugin(Star):
                 return
 
             egg = self._black_egg()
+            boost = await self._add_favour_boost(event, user_id, adjusted_date)
             result = await self.core._generate_and_send_calendar(
                 event, user_id, user_name, self.db_path, adjusted_date, dark=egg)
 
@@ -706,6 +805,8 @@ class CakeDeniaPlugin(Star):
                 chain.append(Plain(self._feed_too_many(egg)))
             for t in ach_texts:
                 chain.append(Plain(t))
+            if boost:
+                chain.append(Plain(FAVOUR_BOOST.format(n=boost)))
             if llm_text:
                 chain.append(Plain(LLM_REPLY_PREFIX.format(text=llm_text)))
             yield event.chain_result(chain)
