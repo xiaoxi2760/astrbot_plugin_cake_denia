@@ -379,8 +379,9 @@ class CakeDeniaPlugin(Star):
                 logger.error(f"写入首喂标记失败: {e}")
                 return None
         try:
-            is_global = bool(getattr(plugin, 'is_global_favour', False))
-            session_id = "global" if is_global else (getattr(event, 'unified_msg_origin', None) or "")
+            # 好感度插件现为纯全局模式：session = 适配器前缀（如 "aiocqhttp"），与 Favour_Ultra._get_session_id 对齐
+            origin = getattr(event, 'unified_msg_origin', None) or ""
+            session_id = origin.split(":")[0] if ":" in origin else "global"
             delta = random.randint(1, 5)
             rec = await dbm.get_favour(uid, session_id)
             old = rec.favour if rec else 0
@@ -391,7 +392,7 @@ class CakeDeniaPlugin(Star):
             logger.info(
                 f"[联动好感度] plugin={type(plugin).__module__}.{type(plugin).__name__} "
                 f"db={getattr(dbm, 'db_path', None)} uid={uid} session={session_id!r} "
-                f"is_global={is_global} old={old} delta={delta} new={new} ok={ok}"
+                f"old={old} delta={delta} new={new} ok={ok}"
             )
             return delta if ok else None
         except Exception as e:
