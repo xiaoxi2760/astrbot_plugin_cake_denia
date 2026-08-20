@@ -148,6 +148,8 @@ class CakeDeniaPlugin(Star):
         self.emoji_download_url = config.get("emoji_download_url", DEFAULT_EMOJI_URL)
         self.render_backend = config.get("render_backend", "pil")
         self.theme_preset = config.get("theme_preset", "white-1")
+        # 好感度联动：每天首次获得蛋糕才加 1~5 好感（默认 True）；改为 False 则每次喂蛋糕都加（测试用）
+        self.favour_daily_limit = bool(config.get("favour_daily_limit", True))
         # 触发词（用户可 DIY）：默认 🍰/蛋糕，可改为任意关键词
         words = config.get("trigger_words") or DEFAULT_TRIGGER_WORDS
         self.trigger_words = [str(w) for w in words]
@@ -352,9 +354,10 @@ class CakeDeniaPlugin(Star):
         return None
 
     async def _add_favour_boost(self, event: AstrMessageEvent, uid: str, adjusted_date: str):
-        """每日首次获得蛋糕时给 Favour_Ultra 好感度 +1~5；未安装/当日已加过/失败返回 None。
+        """给 Favour_Ultra 好感度 +1~5；未安装/失败返回 None。
 
-        用 metadata 原子占位保证「每天每个用户只加一次」，不重复计。
+        favour_daily_limit=True（默认）：每天每个用户只加一次（metadata 原子占位）；
+        favour_daily_limit=False：每次喂蛋糕都加（测试用，可观察好感度链路是否通畅）。
         """
         plugin = self._find_favour_plugin()
         if plugin is None:
@@ -362,18 +365,19 @@ class CakeDeniaPlugin(Star):
         dbm = getattr(plugin, 'db_manager', None)
         if dbm is None:
             return None
-        key = f"favour_first:{uid}:{adjusted_date}"
-        try:
-            async with aiosqlite.connect(self.db_path, timeout=5.0) as conn:
-                cur = await conn.execute(
-                    "INSERT INTO metadata (key, value) VALUES (?, '1') ON CONFLICT(key) DO NOTHING",
-                    (key,))
-                await conn.commit()
-                if cur.rowcount == 0:
-                    return None  # 当日已获得过蛋糕，不重复加
-        except Exception as e:
-            logger.error(f"写入首喂标记失败: {e}")
-            return None
+        if self.favour_daily_limit:
+            key = f"favour_first:{uid}:{adjusted_date}"
+            try:
+                async with aiosqlite.connect(self.db_path, timeout=5.0) as conn:
+                    cur = await conn.execute(
+                        "INSERT INTO metadata (key, value) VALUES (?, '1') ON CONFLICT(key) DO NOTHING",
+                        (key,))
+                    await conn.commit()
+                    if cur.rowcount == 0:
+                        return None  # 当日已获得过蛋糕，不重复加
+            except Exception as e:
+                logger.error(f"写入首喂标记失败: {e}")
+                return None
         try:
             is_global = bool(getattr(plugin, 'is_global_favour', False))
             session_id = "global" if is_global else (getattr(event, 'unified_msg_origin', None) or "")

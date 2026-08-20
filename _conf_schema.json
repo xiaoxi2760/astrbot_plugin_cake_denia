@@ -102,5 +102,11 @@
         "type": "string",
         "default": "white-1",
         "options": ["custom", "white-1", "white-2", "black-1", "black-2"]
+    },
+    "favour_daily_limit": {
+        "description": "好感度联动每日限制",
+        "hint": "默认开启：每天每个用户第一次获得蛋糕时好感度 +1~5，当天不再重复加；关闭后每次喂蛋糕都会加好感度（用于测试好感度链路是否通畅）",
+        "type": "bool",
+        "default": true
     }
 }
