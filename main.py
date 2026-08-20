@@ -387,8 +387,13 @@ class CakeDeniaPlugin(Star):
             min_v = getattr(plugin, 'min_favour_value', -100)
             max_v = getattr(plugin, 'max_favour_value', 100)
             new = max(min_v, min(max_v, old + delta))
-            await dbm.update_favour(uid, session_id, favour=new)
-            return delta
+            ok = await dbm.update_favour(uid, session_id, favour=new)
+            logger.info(
+                f"[联动好感度] plugin={type(plugin).__module__}.{type(plugin).__name__} "
+                f"db={getattr(dbm, 'db_path', None)} uid={uid} session={session_id!r} "
+                f"is_global={is_global} old={old} delta={delta} new={new} ok={ok}"
+            )
+            return delta if ok else None
         except Exception as e:
             logger.error(f"联动好感度失败: {e}")
             return None
