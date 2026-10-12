@@ -16,6 +16,7 @@
 - 🍰榜 [页码]：排行榜（自己喂/被喂/替喂 × 今日/本月，含成就徽章）
 - 🍰成就：查看成就墙
 - 🍰重置榜单：管理员重置今日计数（可@他人）
+- 💗 好感度联动：每天首次喂蛋糕时好感度 +1~5（需搭配 [Favour Lite](https://github.com/xiaoxi2760/astrbot_plugin_Favour_Lite)，详见下方「好感度联动」）
 - 🍰帮助：查看帮助
 
 ## 效果预览
@@ -64,12 +65,34 @@
 | emoji_download_url | string | GitHub Releases | emoji 字体下载地址，Windows 系统自带 emoji 字体可不填 |
 | render_backend | string | html | 渲染后端：`html`（HTML/CSS + Playwright + 系统 Chrome，**日历/排行榜/报告/生涯四类图均支持**，默认）或 `pil`（纯 Pillow 绘制，无额外依赖，效果略逊）。html 需要服务器安装 playwright 与 Chrome，未安装或渲染失败会**自动降级 pil**，不影响使用 |
 | theme_preset | string | white-1 | 日历主题：`white-1`（娅娅·泡泡初绽，默认）/ `white-2`（娅娅·马卡龙双层）/ `black-1`（达妮娅·暗夜泡泡）/ `black-2`（达妮娅·阿列夫之眼）/ `custom`（resources/theme.json 自定义） |
+| favour_daily_limit | bool | true | 好感度联动每日限制：开启时每天每个用户第一次获得蛋糕才 +1~5；关闭后每次喂蛋糕都加（用于测试好感度链路是否通畅） |
 
 > 达妮娅（暗夜）是**彩蛋**：无论 `theme_preset` 选什么主题，喂蛋糕回复都有 20% 概率以「达妮娅」（boss版）口吻出现，且**当日历图同时生成时，那张日历也会用达妮娅暗夜主题（black-1）渲染**。触发达妮娅彩蛋时，该条回复**不会触发 LLM 对话**。想关掉彩蛋，把 `resources/texts.py` 里的 `BLACK_*` 列表清空即可。
 
 ## LLM 上下文
 
 触发 LLM 对话时，会把本次投喂的真实数据喂给模型（本次投喂块数、当日累计、投喂者连续天数、生涯累计、当前时段），因此娅娅的回应会贴合当下情境而不是通用撒娇。人设提示固定在 `LLM_SYSTEM_PROMPT`，上下文模板是 `LLM_CONTEXT_TEMPLATE`（均位于 `resources/texts.py`，可直接改文案）。统计查询异常时自动降级为固定 prompt，不会影响投喂计数。
+
+## 💗 好感度联动
+
+喂蛋糕会顺带给用户涨好感度，**需要搭配好感度插件**。没装或没启用时喂蛋糕功能照常可用，只是不显示好感变动行。
+
+> [!IMPORTANT]
+> **联动请安装 [astrbot_plugin_Favour_Lite](https://github.com/xiaoxi2760/astrbot_plugin_Favour_Lite)（精简修改版），不要用原版 [Favour_Ultra](https://github.com/nuomicici/astrbot_plugin_Favour_Ultra)。**
+>
+> 本插件按**纯全局口径**写入：session 固定为 `global`，同一用户跨群 / 跨平台共享一份好感度。
+> Favour_Lite 正是纯全局模式，两边口径一致；而原版 Favour_Ultra 是**会话隔离**的，
+> 本插件写进 `global` 的那条记录不会被它自己的查询命中，表现为「蛋糕也喂了、好感提示也弹了，但查询和排名里看不到变化」。
+
+| 项 | 说明 |
+| --- | --- |
+| 触发时机 | 每天每个用户**第一次**获得蛋糕时，好感度随机 **+1~5**，当天不再重复加 |
+| 帮喂 | `🍰 @某人` 同样计入被帮喂用户的当日首喂判定 |
+| 开关 | 配置 `favour_daily_limit`，默认 `true`；设为 `false` 则**每次**喂蛋糕都加，用来验证链路是否通畅 |
+| 提示行 | 优先复用 Favour_Lite 的 `favour_change_line()`（`❤️/🖤：好感度±X  总好感：Y`），取不到时回退为 `（好感度 +N）` |
+| 反向联动 | 在 Favour_Lite 里执行 `称号`，蛋糕生涯称号会作为称号显示来源之一 |
+
+排查方式：日志里搜 `[联动好感度]` 可看到命中的插件、数据库路径与变化前后数值；搜 `联动好感度失败` 说明写入环节报错。
 
 ## 自动清理
 
