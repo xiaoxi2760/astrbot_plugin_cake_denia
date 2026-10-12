@@ -392,9 +392,14 @@ class CakeDeniaPlugin(Star):
         """达妮娅彩蛋：20% 概率随机出现，与日历主题无关。"""
         return random.random() < 0.2
 
-    # ------------------------------------------------------------ 好感度联动（Favour_Ultra）
+    # ------------------------------------------------------------ 好感度联动（Favour_Lite / Favour_Ultra）
+    # 两个插件的 metadata name 不同，必须都认：本插件按纯全局口径（session="global"）
+    # 写入，只有 Favour_Lite 是纯全局模式；原版 Ultra 会话隔离，装它会导致写入的
+    # global 行不会被它自己的查询命中，表现为"喂了蛋糕但查不到好感度"。
+    FAVOUR_PLUGIN_NAMES = ('astrbot_plugin_Favour_Lite', 'astrbot_plugin_Favour_Ultra')
+
     def _find_favour_plugin(self):
-        """通过 star 注册表定位 Favour_Ultra 插件实例；未安装/未激活返回 None（结果缓存）。"""
+        """通过 star 注册表定位好感度插件实例；未安装/未激活返回 None（结果缓存）。"""
         if self._favour_plugin_cached is not None:
             return self._favour_plugin_cached
         try:
@@ -403,14 +408,14 @@ class CakeDeniaPlugin(Star):
             self._favour_plugin_cached = False
             return None
         for meta in stars:
-            if getattr(meta, 'name', None) == 'astrbot_plugin_Favour_Ultra' and getattr(meta, 'star_cls', None) is not None:
+            if getattr(meta, 'name', None) in self.FAVOUR_PLUGIN_NAMES and getattr(meta, 'star_cls', None) is not None:
                 self._favour_plugin_cached = meta.star_cls
                 return meta.star_cls
         self._favour_plugin_cached = False
         return None
 
     async def _add_favour_boost(self, event: AstrMessageEvent, uid: str, adjusted_date: str):
-        """给 Favour_Ultra 好感度 +1~5；未安装/失败返回 None。
+        """给好感度插件的全局好感度 +1~5；未安装/失败返回 None。
 
         favour_daily_limit=True（默认）：每天每个用户只加一次（metadata 原子占位）；
         favour_daily_limit=False：每次喂蛋糕都加（测试用，可观察好感度链路是否通畅）。
