@@ -13,6 +13,8 @@ from datetime import date, datetime, timedelta
 from PIL import Image, ImageDraw, ImageFont
 from astrbot.api import logger
 
+from . import render_common as rc
+
 from .resources.texts import (
     CALENDAR_EMPTY, CALENDAR_ERROR, CALENDAR_FONT_MISSING,
     CALENDAR_SERVER_FONT_MISSING, CALENDAR_UNKNOWN_ERROR,
@@ -55,31 +57,76 @@ class CakeCore:
         '/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf',
     ]
 
-    def __init__(self, font_path: str, db_path: str, temp_dir: str, render_backend: str = "pil",
-                 theme_preset: str = "custom"):
+    def __init__(self, font_path: str, db_path: str, temp_dir: str, render_backend: str = "html",
+                 theme_preset: str = "custom", avatar_dir: str = ""):
         self._plugin_dir = os.path.dirname(font_path) if font_path else os.getcwd()
         self.font_path = None
         self.db_path = db_path
         self.temp_dir = temp_dir
+        # 头像缓存目录（HTML 排行榜渲染器需要；为空则回落到 temp_dir）
+        self.avatar_cache_dir = avatar_dir or temp_dir
         self._emoji_font = None
         self._init_fonts()
-        # 日历渲染后端：pil（默认，无额外依赖）/ html（Playwright + 系统 Chrome）
-        self.render_backend = render_backend if render_backend in ("pil", "html") else "pil"
+        # 渲染后端：html（Playwright + 系统 Chrome，默认）/ pil（纯 Pillow 无依赖）
+        self.render_backend = render_backend if render_backend in ("pil", "html") else "html"
         # 日历主题：预设 white-1/white-2/black-1/black-2 或 custom（读 resources/theme.json）
         from .theme import load_theme
         self.theme_preset = theme_preset
         self.theme = load_theme(theme_preset)
         from .render_pil.calendar import PilCalendarRenderer
         self._pil_renderer = PilCalendarRenderer(self, self.theme)
+        # 日历 / 排行榜 / 报告 / 生涯四类图共用同一后端选择，均支持 HTML 优先 + PIL 降级
+        self._html_renderers = None
         if self.render_backend == "html":
-            from .render_html.calendar import HtmlCalendarRenderer
-            self.calendar_renderer = HtmlCalendarRenderer(self, self.theme)
-        else:
-            self.calendar_renderer = self._pil_renderer
+            self._init_html_renderers()
         # 达妮娅（暗夜·black-1）彩蛋渲染器：懒加载，仅在彩蛋触发时使用
         self._dark_renderer = None
         # 达妮娅暗夜主题的 PIL 渲染器：HTML 后端失败降级时用（始终纯 PIL，不碰 Playwright）
         self._dark_pil_renderer = None
+
+    def _init_html_renderers(self):
+        """初始化四类图的 HTML 渲染器（缺失依赖时静默退回 PIL）。"""
+        if self._html_renderers is not None:
+            return
+        renderers = {}
+        try:
+            from .render_html.calendar import HtmlCalendarRenderer
+            renderers['calendar'] = HtmlCalendarRenderer(self, self.theme)
+        except Exception as e:
+            logger.error(f"HTML 日历渲染器初始化失败，将使用 PIL：{e}")
+        try:
+            from .render_html.ranking import HtmlRankingRenderer
+            renderers['ranking'] = HtmlRankingRenderer(self, self.theme)
+        except Exception as e:
+            logger.error(f"HTML 排行榜渲染器初始化失败，将使用 PIL：{e}")
+        try:
+            from .render_html.analysis import HtmlAnalysisRenderer
+            renderers['analysis'] = HtmlAnalysisRenderer(self, self.theme)
+        except Exception as e:
+            logger.error(f"HTML 报告渲染器初始化失败，将使用 PIL：{e}")
+        try:
+            from .render_html.career import HtmlCareerRenderer
+            renderers['career'] = HtmlCareerRenderer(self, self.theme)
+        except Exception as e:
+            logger.error(f"HTML 生涯渲染器初始化失败，将使用 PIL：{e}")
+        self._html_renderers = renderers
+
+    def _get_html_renderer(self, kind):
+        """取指定类型的 HTML 渲染器；未启用或不可用返回 None（调用方降级 PIL）。"""
+        if self.render_backend != "html":
+            return None
+        if self._html_renderers is None:
+            self._init_html_renderers()
+        return self._html_renderers.get(kind)
+
+    def _close_html_browser_on_error(self):
+        """HTML 渲染异常时重置浏览器单例，避免坏实例被后续渲染复用。"""
+        try:
+            from .render_html.calendar import _close_browser
+            _close_browser()
+        except Exception:
+            pass
+
 
     def _get_dark_renderer(self):
         """达妮娅暗夜渲染器：black-1 主题，用于达妮娅彩蛋日历（与配置主题无关）。"""
@@ -295,7 +342,9 @@ class CakeCore:
             if os.path.exists(ep):
                 ef = ImageFont.truetype(ep, size)
                 w = draw.textlength(CAKE_EMOJI, font=ef)
-                draw.text((xy[0] + size / 2 - w / 2, xy[1]), CAKE_EMOJI, font=ef, fill=(0, 0, 0, 0), embedded_color=True)
+                # 无彩色 emoji 字体时用蛋糕红兜底（fill=(0,0,0,0) 会画成全透明）
+                draw.text((xy[0] + size / 2 - w / 2, xy[1]), CAKE_EMOJI, font=ef,
+                          fill=CAKE_RED, embedded_color=True)
         except Exception:
             pass
 
@@ -414,137 +463,415 @@ class CakeCore:
         safe = safe.strip().strip('.')
         return safe or 'unnamed'
 
+    def _palette(self):
+        """当前主题调色板（与日历渲染共用，保证四张图同一套设计语言）。"""
+        from .render_common import ThemePalette
+        p = getattr(self, '_theme_palette', None)
+        if p is None:
+            p = ThemePalette(getattr(self, 'theme', None))
+            self._theme_palette = p
+        return p
+
+    def _wrap_lines(self, draw, text, font, max_w):
+        """按像素宽度折行（中英文混排逐字符测量，避免长句溢出画布）。"""
+        if not text:
+            return ['']
+        lines, cur = [], ''
+        for ch in text:
+            if ch == '\n':
+                lines.append(cur)
+                cur = ''
+                continue
+            probe = cur + ch
+            if self._measure_text_width(draw, probe, font) > max_w and cur:
+                lines.append(cur)
+                cur = ch
+            else:
+                cur = probe
+        lines.append(cur)
+        return lines
+
     def _create_analysis_image(self, user_name: str, target_period: str, analysis_result: str,
                                checkin_rate: float = 0.0, system_name: str = "蛋糕") -> str:
-        WIDTH, HEIGHT = 750, 550
-        if checkin_rate >= 0.7:
-            BG_COLOR = (255, 235, 240)
-            HEADER_COLOR = (200, 80, 110)
-        elif checkin_rate >= 0.4:
-            BG_COLOR = (255, 242, 235)
-            HEADER_COLOR = (180, 110, 90)
-        else:
-            BG_COLOR = (240, 240, 255)
-            HEADER_COLOR = (110, 100, 180)
-        TEXT_COLOR = (60, 50, 55)
-        font_header = ImageFont.truetype(self.font_path, 32)
-        font_content = ImageFont.truetype(self.font_path, 22)
-        img = Image.new('RGB', (WIDTH, HEIGHT), BG_COLOR)
-        draw = ImageDraw.Draw(img)
-        header_text = ANALYSIS_HEADER.format(period=target_period, name=user_name)
-        header_bbox = draw.textbbox((0, 0), header_text, font=font_header)
-        header_width = header_bbox[2] - header_bbox[0]
-        draw.text(((WIDTH - header_width) // 2, 40), header_text, font=font_header, fill=HEADER_COLOR)
-        lines = analysis_result.split('\n')
-        y_offset = 100
-        line_height = 35
-        for line in lines:
-            line = line.strip()
+        """投喂报告图：白玻璃卡 + 主题色洗层 + 旋钮进度条 + 正文气泡芯片。
+
+        render_backend=html 时优先 HTML/CSS + Chrome，失败自动降级 PIL。
+        """
+        html_renderer = self._get_html_renderer('analysis')
+        if html_renderer is not None:
+            try:
+                return html_renderer.render(
+                    user_name, target_period, analysis_result, checkin_rate, system_name)
+            except Exception as e:
+                logger.error(f"HTML 报告渲染失败，降级 PIL: {e}")
+                self._close_html_browser_on_error()
+        pal = self._palette()
+        W, MARGIN = 750, 34
+        CARD_W = W - MARGIN * 2
+        CHIP_MAX_W = CARD_W - 72          # 芯片内文字可用宽度（两侧留白）
+        f_title = ImageFont.truetype(self.font_path, 30)
+        f_sub = ImageFont.truetype(self.font_path, 15)
+        f_hero = ImageFont.truetype(self.font_path, 20)
+        f_body = ImageFont.truetype(self.font_path, 18)
+        f_lab = ImageFont.truetype(self.font_path, 16)
+        f_tip = ImageFont.truetype(self.font_path, 15)
+
+        measure = ImageDraw.Draw(Image.new('RGB', (1, 1)))
+        card_rgb = pal.card_fill[:3]
+        chip_fill = rc.mix(pal.feed_top, card_rgb, 0.78)
+        chip_border = rc.mix(pal.feed_border, card_rgb, 0.5)
+
+        # ---- 正文分行 + 分类（hero 首行 / quote 引语 / tip 贴士 / normal）----
+        QUOTE_PREFIX = ('娅娅：', '达妮娅：', '年度评价：')
+        blocks = []          # (kind, [折行后文本])
+        kind = 'normal'
+        for raw in analysis_result.split('\n'):
+            line = raw.strip()
             if not line:
-                y_offset += line_height // 2
+                blocks.append(('gap', []))
+                kind = 'normal'
                 continue
-            bbox = draw.textbbox((0, 0), line, font=font_content)
-            text_width = bbox[2] - bbox[0]
-            x_pos = (WIDTH - text_width) // 2
-            draw.text((x_pos, y_offset), line, font=font_content, fill=TEXT_COLOR)
-            y_offset += line_height
+            if line.startswith(QUOTE_PREFIX):
+                kind = 'quote'
+            elif line.startswith('小贴士：'):
+                kind = 'tip'
+            font = {'hero': f_hero, 'quote': f_body, 'tip': f_tip}.get(kind, f_body)
+            blocks.append((kind, self._wrap_lines(measure, line, font, CHIP_MAX_W)))
+        for i, (k, lines) in enumerate(blocks):
+            if k == 'normal':
+                blocks[i] = ('hero', lines)
+                break
+
+        def block_font(k):
+            return {'hero': f_hero, 'quote': f_body, 'tip': f_tip}.get(k, f_body)
+
+        def block_h(k, lines):
+            if k == 'gap':
+                return 10
+            font = block_font(k)
+            vpad = 10 if k == 'hero' else (9 if k == 'quote' else 8)
+            return len(lines) * (font.size + 10) + vpad * 2 + 9   # 尾随 9 = 块间距
+
+        # ---- 布局高度：头部 100 + 进度条区 68 + 正文 + 底部收尾 26 ----
+        TITLE_ZONE, RATE_ZONE, FOOTER_H = 100, 68, 26
+        body_h = sum(block_h(k, ls) for k, ls in blocks)
+        card_h = TITLE_ZONE + RATE_ZONE + body_h + FOOTER_H
+        H = card_h + MARGIN * 2
+
+        CARD_BOX = (MARGIN, MARGIN, W - MARGIN, MARGIN + card_h)
+        img = rc.scene(W, H, pal, card_box=CARD_BOX, card_radius=26,
+                       shadow_alpha=90, shadow_spread=1.25)
+        img.alpha_composite(rc.top_wash(W, H, CARD_BOX, 26, pal.feed_top, 150, 80))
+        draw = ImageDraw.Draw(img)
+
+        # ---- 标题 + 副标题 + 渐变下划线 ----
+        header_text = ANALYSIS_HEADER.format(period=target_period, name=user_name)
+        self._draw_text(draw, (W / 2, MARGIN + 42), header_text,
+                        font=f_title, fill=rc.darken(pal.title, 0.88), anchor='mm')
+        self._draw_text(draw, (W / 2, MARGIN + 72), f'{target_period}的投喂报告',
+                        font=f_sub, fill=pal.subtitle, anchor='mm')
+        ul_w, ul_h = 52, 5
+        img.alpha_composite(rc.pill(ul_w, ul_h, pal.feed_top, pal.feed_bottom, ul_h // 2),
+                            dest=(int(W / 2 - ul_w / 2), MARGIN + 86))
+
+        # ---- 投喂率：标签 + 圆角轨道 + 渐变填充 + 白色旋钮 ----
+        rate_pct = max(0, min(1.0, float(checkin_rate or 0)))
+        bar_w = CARD_W - 44
+        bar_x = MARGIN + 22
+        bar_y = MARGIN + TITLE_ZONE + 26
+        bar_h = 18
+        self._draw_text(draw, (bar_x, bar_y - 7), '本月投喂率', font=f_lab,
+                        fill=pal.subtitle, anchor='ls')
+        self._draw_text(draw, (bar_x + bar_w, bar_y - 7), f'{rate_pct:.0%}',
+                        font=f_lab, fill=pal.accent_text, anchor='rs')
+        track = rc.pill(bar_w, bar_h, pal.empty_bg, pal.empty_bg, bar_h // 2)
+        img.alpha_composite(track, dest=(bar_x, bar_y))
+        draw.rounded_rectangle([bar_x, bar_y, bar_x + bar_w - 1, bar_y + bar_h - 1],
+                               radius=bar_h // 2, outline=pal.empty_border, width=1)
+        filled_w = int(bar_w * rate_pct)
+        if filled_w > bar_h:
+            fill = rc.pill(filled_w, bar_h, pal.feed_top, pal.feed_bottom, bar_h // 2)
+            img.alpha_composite(fill, dest=(bar_x, bar_y))
+        if rate_pct > 0:
+            kx = min(max(bar_x + filled_w, bar_x + bar_h // 2 + 2),
+                     bar_x + bar_w - bar_h // 2 - 2)
+            ky = bar_y + bar_h / 2
+            draw.ellipse([kx - 11, ky - 11, kx + 11, ky + 11],
+                         fill=(255, 255, 255), outline=pal.feed_bottom, width=4)
+
+        # ---- 正文气泡芯片 ----
+        body_top = MARGIN + TITLE_ZONE + RATE_ZONE
+        y = body_top
+        for kind, lines in blocks:
+            if kind == 'gap':
+                y += 10
+                continue
+            font = block_font(kind)
+            line_h = font.size + 10
+            vpad = 10 if kind == 'hero' else (9 if kind == 'quote' else 8)
+            block_h_px = len(lines) * line_h + vpad * 2
+            num_color = pal.accent_text
+            if kind == 'tip':
+                ty = y + vpad
+                for ln in lines:
+                    self._draw_text(draw, (W / 2, ty), ln, font=font,
+                                    fill=pal.subtitle, anchor='mt')
+                    ty += line_h
+                y += block_h_px + 9
+                continue
+            runs_list = [rc.number_runs(ln) for ln in lines]
+            w_max = max(rc.runs_width(draw, runs, font, font) for runs in runs_list)
+            chip_w = min(w_max + 40, CARD_W - 16)
+            cx0 = (W - chip_w) / 2
+            box = [cx0, y, cx0 + chip_w, y + block_h_px]
+            if kind == 'hero':
+                grad = rc.pill(int(chip_w), int(block_h_px),
+                               rc.mix(pal.feed_top, card_rgb, 0.45),
+                               rc.mix(pal.feed_bottom, card_rgb, 0.6), 16)
+                img.alpha_composite(grad, dest=(int(cx0), int(y)))
+                draw.rounded_rectangle(box, radius=16,
+                                       outline=rc.mix(pal.feed_border, card_rgb, 0.35), width=1)
+            else:
+                draw.rounded_rectangle(box, radius=16, fill=chip_fill + (255,),
+                                       outline=chip_border + (255,), width=1)
+            if kind == 'quote':
+                draw.rounded_rectangle(
+                    [box[0] + 12, box[1] + vpad + 2, box[0] + 16, box[3] - vpad - 2],
+                    radius=2, fill=pal.accent + (255,))
+            ty = y + vpad
+            tx = W / 2 - w_max / 2
+            for runs in runs_list:
+                cx = tx
+                for text, is_num in runs:
+                    # 正文均为固定模板文案（无 emoji），直接逐段绘制以给数字换色
+                    draw.text((cx, ty + line_h / 2), text, font=font,
+                              fill=num_color if is_num else pal.body, anchor='lm')
+                    cx += draw.textlength(text, font=font)
+                ty += line_h
+            y += block_h_px + 9
+
+        # ---- 底部收尾三点 ----
+        dot_y = MARGIN + card_h - 18
+        for i, c in enumerate((pal.accent, pal.feed_border, pal.empty_border)):
+            dx = W / 2 + (i - 1) * 14
+            draw.ellipse([dx - 2.5, dot_y - 2.5, dx + 2.5, dot_y + 2.5],
+                         fill=c + (255,))
+
+        out_path = self._analysis_path(user_name, target_period)
+        img.convert('RGB').save(out_path, format='PNG')
+        return out_path
+
+    def _analysis_path(self, user_name: str, target_period: str) -> str:
         safe_user = self._safe_file_component(user_name)
         safe_period = self._safe_file_component(target_period.replace('年', '_').replace('月', ''))
-        file_path = os.path.join(self.temp_dir, f"analysis_{safe_user}_{safe_period}_{int(time.time())}.png")
-        img.save(file_path, format='PNG')
-        return file_path
+        return os.path.join(self.temp_dir,
+                            f"analysis_{safe_user}_{safe_period}_{int(time.time())}.png")
 
     def _create_career_image(self, user_name: str, stats: dict, system_name: str = "娅娅") -> str:
-        WIDTH = 800
-        HEIGHT = 1100
-        BG_COLOR = PINK_BG
-        TITLE_COLOR = CHOCO
-        SUBTITLE_COLOR = (150, 110, 120)
-        TEXT_COLOR = (90, 70, 80)
-        HIGHLIGHT_COLOR = PINK_DEEP
-        SECTION_BG_COLOR = (255, 255, 255)
-        COMMENT_COLOR = (160, 130, 140)
+        """生涯档案图：白玻璃卡 + 渐变 KPI 三宫格 + 图标分区卡 + 标签值对齐行。
 
-        img = Image.new('RGB', (WIDTH, HEIGHT), BG_COLOR)
-        draw = ImageDraw.Draw(img)
-        font_title = ImageFont.truetype(self.font_path, 40)
-        font_subtitle = ImageFont.truetype(self.font_path, 24)
-        font_section_title = ImageFont.truetype(self.font_path, 28)
-        font_text = ImageFont.truetype(self.font_path, 24)
-        font_comment = ImageFont.truetype(self.font_path, 20)
-        y_pos = 50
-        draw.text((WIDTH / 2, y_pos), CAREER_TITLE, font=font_title, fill=TITLE_COLOR, anchor="mm")
-        y_pos += 50
-        draw.text((WIDTH / 2, y_pos), CAREER_FEEDER.format(name=user_name),
-                  font=font_subtitle, fill=SUBTITLE_COLOR, anchor="mm")
-        y_pos += 40
-        draw.text((WIDTH / 2, y_pos), CAREER_QUOTE.format(comment=stats['summary_comment']),
-                  font=font_section_title, fill=HIGHLIGHT_COLOR, anchor="mm")
-        y_pos += 60
+        render_backend=html 时优先 HTML/CSS + Chrome，失败自动降级 PIL。
+        """
+        html_renderer = self._get_html_renderer('career')
+        if html_renderer is not None:
+            try:
+                return html_renderer.render(user_name, stats, system_name)
+            except Exception as e:
+                logger.error(f"HTML 生涯渲染失败，降级 PIL: {e}")
+                self._close_html_browser_on_error()
+        pal = self._palette()
+        W, MARGIN = 800, 40
+        CARD_W = W - MARGIN * 2
+        f_title = ImageFont.truetype(self.font_path, 34)
+        f_sub = ImageFont.truetype(self.font_path, 17)
+        f_quote = ImageFont.truetype(self.font_path, 20)
+        f_sec = ImageFont.truetype(self.font_path, 20)
+        f_body = ImageFont.truetype(self.font_path, 18)
+        f_note = ImageFont.truetype(self.font_path, 15)
+        f_kpi_num = ImageFont.truetype(self.font_path, 32)
+        f_kpi_cap = ImageFont.truetype(self.font_path, 14)
 
-        def draw_section(title, lines, start_y):
-            content_height = 0
-            processed_lines = []
-            for item in lines:
-                text = item['text']
-                is_comment = item.get('is_comment', False)
-                f = font_comment if is_comment else font_text
-                color = COMMENT_COLOR if is_comment else TEXT_COLOR
-                offset = 30 if is_comment else 35
-                processed_lines.append((text, f, color, offset))
-                content_height += offset
-            section_height = 40 + content_height + 20
-            draw.rectangle([40, start_y, WIDTH - 40, start_y + section_height], fill=SECTION_BG_COLOR, outline=(240, 210, 220), width=1)
-            current_y = start_y + 25
-            draw.text((60, current_y), title, font=font_section_title, fill=HIGHLIGHT_COLOR, anchor="lm")
-            current_y += 40
-            for text, f, color, offset in processed_lines:
-                draw.text((80, current_y), text, font=f, fill=color, anchor="lm")
-                current_y += offset
-            return start_y + section_height + 30
+        measure = ImageDraw.Draw(Image.new('RGB', (1, 1)))
+        card_rgb = pal.card_fill[:3]
 
-        lines = [{'text': CAREER_FIRST.format(date=stats['first_date_str'],
-                                              days=stats['total_span_days'])}]
-        y_pos = draw_section(CAREER_SECTIONS[0], lines, y_pos)
-        avg_display = ""
-        if stats['daily_avg'] > 1:
-            avg_display = CAREER_AVG_DAILY.format(avg=f"{stats['daily_avg']:.2f}")
-        elif stats['daily_avg'] > 0:
-            interval = 1 / stats['daily_avg']
-            avg_display = CAREER_AVG_INTERVAL.format(interval=f"{interval:.1f}")
-        else:
-            avg_display = CAREER_AVG_ZERO
-        lines = [
-            {'text': CAREER_TOTAL.format(count=stats['total_count'])},
-            {'text': CAREER_DAYS.format(days=stats['total_days'],
-                                        ratio=f"{stats['active_ratio']:.1f}%")},
-            {'text': avg_display}
-        ]
-        y_pos = draw_section(CAREER_SECTIONS[1], lines, y_pos)
-        lines = []
+        # ---------- 组装分区内容（口径与 HTML 版一致）----------
+        sections = []        # (标题, [(文本, 是否注释)])
+
+        def add(title, items):
+            sections.append((title, [(t, c) for t, c in items if t]))
+
+        add(CAREER_SECTIONS[0], [(CAREER_FIRST.format(
+            date=stats['first_date_str'], days=stats['total_span_days']), False)])
+
+        avg_display = (CAREER_AVG_DAILY.format(avg=f"{stats['daily_avg']:.2f}")
+                       if stats['daily_avg'] > 1 else
+                       CAREER_AVG_INTERVAL.format(interval=f"{1 / stats['daily_avg']:.1f}")
+                       if stats['daily_avg'] > 0 else CAREER_AVG_ZERO)
+        add(CAREER_SECTIONS[1], [
+            (CAREER_TOTAL.format(count=stats['total_count']), False),
+            (CAREER_DAYS.format(days=stats['total_days'],
+                                ratio=f"{stats['active_ratio']:.1f}"), False),
+            (avg_display, False)])
+
+        peak = []
         if stats['max_day_count'] > 1:
-            lines.append({'text': CAREER_MAX_DAY.format(
-                date=stats['max_day_date'], count=stats['max_day_count'])})
+            peak.append((CAREER_MAX_DAY.format(
+                date=stats['max_day_date'], count=stats['max_day_count']), False))
         if stats['max_month_count'] > 0:
-            lines.append({'text': CAREER_MAX_MONTH.format(
-                month=stats['max_month_str'], count=stats['max_month_count'])})
-        y_pos = draw_section(CAREER_SECTIONS[2], lines, y_pos)
-        lines = [
-            {'text': CAREER_MIN_MONTH.format(month=stats['min_month_str'],
-                                             count=stats['min_month_count'])},
-            {'text': CAREER_REST.format(text=stats['rest_period_str'])}
-        ]
+            peak.append((CAREER_MAX_MONTH.format(
+                month=stats['max_month_str'], count=stats['max_month_count']), False))
+        add(CAREER_SECTIONS[2], peak)
+
+        miss = [(CAREER_MIN_MONTH.format(month=stats['min_month_str'],
+                                         count=stats['min_month_count']), False),
+                (CAREER_REST.format(text=stats['rest_period_str']), False)]
         if stats['sage_comment']:
-            lines.append({'text': CAREER_COMMENT_WRAP.format(text=stats['sage_comment']),
-                          'is_comment': True})
-        y_pos = draw_section(CAREER_SECTIONS[3], lines, y_pos)
-        lines = [{'text': CAREER_STATUS.format(days=stats['status_day'])}]
+            miss.append((CAREER_COMMENT_WRAP.format(text=stats['sage_comment']), True))
+        add(CAREER_SECTIONS[3], miss)
+
+        status = [(CAREER_STATUS.format(days=stats['status_day']), False)]
         if stats['status_comment']:
-            lines.append({'text': CAREER_COMMENT_WRAP.format(text=stats['status_comment']),
-                          'is_comment': True})
-        y_pos = draw_section(CAREER_SECTIONS[4], lines, y_pos)
+            status.append((CAREER_COMMENT_WRAP.format(text=stats['status_comment']), True))
+        add(CAREER_SECTIONS[4], status)
+
+        # ---------- 度量：冒号行拆「标签/值」，值按区内最大标签宽对齐 ----------
+        ROW_L = ROW_R = 26
+        HEAD_H, KPI_H = 40, 108
+        sec_layouts = []
+        for title, rows in sections:
+            lab_w = 0
+            for text, is_note in rows:
+                if not is_note and '：' in text:
+                    lab_w = max(lab_w, measure.textlength(text.split('：', 1)[0] + '：',
+                                                          font=f_body))
+            val_x = ROW_L + int(lab_w) + 6
+            items = []
+            for text, is_note in rows:
+                font = f_note if is_note else f_body
+                lh = 24 if is_note else 30
+                if not is_note and '：' in text:
+                    label, value = text.split('：', 1)
+                    avail = max(CARD_W - ROW_L - ROW_R - (val_x - ROW_L), 80)
+                    vlines = self._wrap_lines(measure, value, font, avail)
+                    items.append(('kv', label, vlines, font, lh))
+                else:
+                    lines = self._wrap_lines(measure, text, font, CARD_W - ROW_L - ROW_R)
+                    items.append(('note' if is_note else 'plain', None, lines, font, lh))
+            rows_h = sum(len(it[2]) * it[4] for it in items)
+            sec_layouts.append((title, items, 12 + HEAD_H + rows_h + 14))
+
+        # ---------- 总高度 ----------
+        header_h = 148
+        kpi_gap, sec_gap, card_pad_bottom = 20, 14, 8
+        card_h = (header_h + KPI_H + kpi_gap
+                  + sum(h for _t, _i, h in sec_layouts)
+                  + sec_gap * (len(sec_layouts) - 1) + card_pad_bottom)
+        H = card_h + MARGIN * 2
+
+        CARD_BOX = (MARGIN, MARGIN, W - MARGIN, MARGIN + card_h)
+        img = rc.scene(W, H, pal, card_box=CARD_BOX, card_radius=28,
+                       shadow_alpha=95, shadow_spread=1.3)
+        img.alpha_composite(rc.top_wash(W, H, CARD_BOX, 28, pal.feed_top, 170, 70))
+        draw = ImageDraw.Draw(img)
+
+        # ---------- 头部 ----------
+        cx = W / 2
+        self._draw_text(draw, (cx, MARGIN + 40), CAREER_TITLE, font=f_title,
+                        fill=rc.darken(pal.title, 0.9), anchor='mm')
+        self._draw_text(draw, (cx, MARGIN + 74), CAREER_FEEDER.format(name=user_name),
+                        font=f_sub, fill=pal.subtitle, anchor='mm')
+        quote_text = CAREER_QUOTE.format(comment=stats['summary_comment'])
+        qw = measure.textlength(quote_text, font=f_quote)
+        qp_w, qp_h = min(qw + 56, CARD_W - 30), 36
+        qp_x, qp_y = (W - qp_w) / 2, MARGIN + 94
+        draw.rounded_rectangle([qp_x, qp_y, qp_x + qp_w, qp_y + qp_h], radius=qp_h // 2,
+                               fill=rc.mix(pal.feed_top, card_rgb, 0.62) + (255,),
+                               outline=rc.mix(pal.feed_border, card_rgb, 0.35) + (255,), width=1)
+        self._draw_text(draw, (W / 2, qp_y + qp_h / 2 + 1), quote_text, font=f_quote,
+                        fill=rc.darken(pal.weekend, 0.85), anchor='mm')
+
+        # ---------- 指标三宫格（竖直渐变卡）----------
+        kpi_y = MARGIN + header_h
+        kpis = [
+            (str(stats['total_count']), '累计蛋糕'),
+            (str(stats['total_days']), '投喂天数'),
+            (f"{stats['daily_avg']:.2f}", '日均投喂'),
+        ]
+        gap = 14
+        kw = (CARD_W - 24 * 2 - gap * 2) // 3
+        kx = MARGIN + 24
+        for cap_val, cap_name in kpis:
+            box = (kx, kpi_y, kx + kw, kpi_y + KPI_H)
+            grad = rc.pill(kw, KPI_H,
+                           rc.mix(pal.feed_top, card_rgb, 0.55),
+                           rc.mix(pal.feed_bottom, card_rgb, 0.75), 18)
+            kmask = Image.new('L', (kw, KPI_H), 0)
+            ImageDraw.Draw(kmask).rounded_rectangle(
+                [0, 0, kw - 1, KPI_H - 1], radius=18, fill=255)
+            klayer = Image.new('RGBA', (W, H), (0, 0, 0, 0))
+            klayer.paste(grad, (kx, kpi_y), kmask)
+            img.alpha_composite(klayer)
+            draw.rounded_rectangle(box, radius=18,
+                                   outline=rc.mix(pal.feed_border, card_rgb, 0.4) + (255,),
+                                   width=1)
+            self._draw_text(draw, (kx + kw / 2, kpi_y + KPI_H / 2 - 13), cap_val,
+                            font=f_kpi_num, fill=pal.accent_text, anchor='mm')
+            self._draw_text(draw, (kx + kw / 2, kpi_y + KPI_H / 2 + 25), cap_name,
+                            font=f_kpi_cap, fill=pal.subtitle, anchor='mm')
+            kx += kw + gap
+
+        # ---------- 分区卡片（图标 + 标题 + 分隔线 + 对齐行）----------
+        y = kpi_y + KPI_H + kpi_gap
+        div_col = rc.mix(pal.empty_border, card_rgb, 0.2)
+        for (title, items, sh) in sec_layouts:
+            box = (MARGIN, y, W - MARGIN, y + sh)
+            img.alpha_composite(rc.rounded_card_layer(
+                W, H, box, radius=18,
+                fill=rc.mix(pal.feed_top, card_rgb, 0.93) + (255,),
+                border=rc.mix(pal.feed_border, card_rgb, 0.35), border_w=1,
+                shadow=True, shadow_color=rc.darken(pal.weekend, 0.45, 0),
+                shadow_blur=9, shadow_offset=3,
+                shadow_alpha=70, shadow_spread=1.1))
+            head_cy = y + 12 + HEAD_H / 2
+            img.alpha_composite(rc.pill(16, 16, pal.feed_top, pal.feed_bottom, 6),
+                                dest=(MARGIN + 22, int(head_cy - 8)))
+            self._draw_text(draw, (MARGIN + 48, head_cy + 1), title, font=f_sec,
+                            fill=rc.darken(pal.weekend, 0.85), anchor='lm')
+            draw.line([(MARGIN + 22, y + 12 + HEAD_H),
+                       (W - MARGIN - 22, y + 12 + HEAD_H)], fill=div_col, width=1)
+            ry = y + 12 + HEAD_H + 10
+            for kind, label, lines, font, lh in items:
+                if kind == 'kv':
+                    draw.text((MARGIN + ROW_L, ry + lh / 2), label + '：',
+                              font=font, fill=pal.subtitle, anchor='lm')
+                    tx = MARGIN + val_x
+                    for vl in lines:
+                        vruns = rc.number_runs(vl)
+                        vcx = tx
+                        for text, is_num in vruns:
+                            draw.text((vcx, ry + lh / 2), text, font=font,
+                                      fill=pal.accent_text if is_num else pal.body,
+                                      anchor='lm')
+                            vcx += draw.textlength(text, font=font)
+                        ry += lh
+                else:
+                    fill_c = pal.subtitle if kind == 'note' else pal.body
+                    for ln in lines:
+                        if kind == 'plain':
+                            lcx = MARGIN + ROW_L
+                            for text, is_num in rc.number_runs(ln):
+                                draw.text((lcx, ry + lh / 2), text, font=font,
+                                          fill=pal.accent_text if is_num else fill_c,
+                                          anchor='lm')
+                                lcx += draw.textlength(text, font=font)
+                        else:
+                            draw.text((MARGIN + ROW_L, ry + lh / 2), ln,
+                                      font=font, fill=fill_c, anchor='lm')
+                        ry += lh
+            y += sh + sec_gap
+
         file_path = os.path.join(self.temp_dir, f"career_{int(time.time())}.png")
-        img.save(file_path)
+        img.convert('RGB').save(file_path, format='PNG')
         return file_path
 
     def _measure_text_width(self, draw, text, font):
@@ -593,6 +920,19 @@ class CakeCore:
             return True
         return os.path.exists(os.path.join(self._plugin_dir, 'resources', 'fonts', 'emoji.ttf'))
 
+    def _draw_cake_emoji(self, draw, xy, font):
+        """画 🍰：有彩色 emoji 字体用 embedded_color；否则退化为红色勾，避免全透明不可见。"""
+        ep = getattr(self, '_emoji_path', None) or os.path.join(
+            self._plugin_dir, 'resources', 'fonts', 'emoji.ttf')
+        try:
+            if ep and os.path.exists(ep):
+                draw.text(xy, CAKE_EMOJI, font=font, fill=CAKE_RED, embedded_color=True,
+                          anchor='mm')
+                return True
+        except Exception:
+            pass
+        return False
+
     def _download_avatar_sync(self, qq_id: str, save_path: str) -> bool:
         """同步下载 QQ 头像到临时文件（由调用方 to_thread 包装，避免阻塞事件循环）。"""
         import urllib.request
@@ -619,7 +959,7 @@ class CakeCore:
                 return ""
         except Exception:
             return ""
-        renderer = self._get_dark_renderer() if dark else self.calendar_renderer
+        renderer = self._get_dark_renderer() if dark else (self._get_html_renderer('calendar') or self._pil_renderer)
         if not getattr(renderer, '_show_avatar', True):
             return ""
         save_path = os.path.join(self.temp_dir, f"avatar_{user_id}.png")
@@ -671,10 +1011,17 @@ class CakeCore:
             # PIL 后端未配置字体：降级为文字提示（resources/fonts 或系统字体均缺失）
             return CALENDAR_FONT_MISSING.format(
                 days=len(checkin_records), cakes=total_cakes_this_month), None, False
-        today = (date.today().day if (current_year == date.today().year
-                                      and current_month == date.today().month) else 0)
+        # 高亮「今天」也以调整日为准（day_start_time 非 00:00 时与入库日期差一天）。
+        # 调整日跨月时渲染的是上一月，此时不标任何格子为今天。
+        if adjusted_date_str:
+            today = (int(adjusted_date_str[8:10])
+                     if (current_year == int(adjusted_date_str[:4])
+                         and current_month == int(adjusted_date_str[5:7])) else 0)
+        else:
+            today = (date.today().day if (current_year == date.today().year
+                                          and current_month == date.today().month) else 0)
         avatar_path = await self._save_qq_avatar(event, user_id, dark)
-        renderer = self._get_dark_renderer() if dark else self.calendar_renderer
+        renderer = self._get_dark_renderer() if dark else (self._get_html_renderer('calendar') or self._pil_renderer)
         pil_fallback = self._get_dark_pil_renderer() if dark else self._pil_renderer
         try:
             image_path = await asyncio.to_thread(
@@ -707,149 +1054,257 @@ class CakeCore:
                 except Exception:
                     pass
 
+    @staticmethod
+    def _row_content_width(draw, avatar_w, nickname, nick_font, badge, badge_font):
+        """计算一行「头像 + 昵称 + 徽章」的总宽度（整数像素）。
+
+        抽出为纯函数便于单测：同一栏内，只要 avatar_w 相同，
+        起始 x 就只取决于昵称+徽章宽度，不同行宽度不同会导致左右抖动。
+        """
+        w = avatar_w + (8 if avatar_w else 0)
+        if nickname:
+            w += draw.textlength(nickname, font=nick_font)
+        if badge:
+            w += 6 + draw.textlength(badge, font=badge_font) + 10
+        return int(round(w))
+
+    @staticmethod
+    def _load_circle_avatar(avatar_dir, uid, size):
+        """读取头像并裁成带白描边的圆形 RGBA；缺失或失败返回 None。"""
+        if not avatar_dir or not uid:
+            return None
+        path = os.path.join(avatar_dir, f"{uid}.png")
+        if not os.path.exists(path):
+            return None
+        try:
+            av = Image.open(path).convert("RGBA").resize((size, size), Image.LANCZOS)
+            mask = Image.new("L", (size, size), 0)
+            ImageDraw.Draw(mask).ellipse((0, 0, size, size), fill=255)
+            out = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+            out.paste(av, (0, 0), mask)
+            # 白描边，和日历头像风格统一
+            ImageDraw.Draw(out).ellipse([1, 1, size - 1, size - 1],
+                                        outline=(255, 255, 255, 235), width=2)
+            return out
+        except Exception:
+            return None
+
     def _create_three_column_ranking_image(self, today_self, today_received, today_helped,
                                            month_self, month_received, month_helped,
                                            year, month, page, total_pages, system_name="🍰",
                                            avatar_dir=None, ach_map=None, max_rows=10):
-        """三栏排行榜：自己喂/被喂/替喂 × 今日/本月，名字旁显示成就徽章数。
+        """排行榜图：主题场景 + 白玻璃栏卡 + 前三名奖牌 + 行分隔线。
+
+        render_backend=html 时优先用 HTML/CSS + Chrome 渲染（排版更整齐），
+        失败自动降级到 PIL 实现。
 
         data_rows: (rank, uid, nickname, count, ach_count)
-        max_rows: 每栏最多展示行数（默认 10，与 ranking_display_count 配置保持一致）。
+        max_rows: 每栏最多展示行数（默认 10，与 ranking_display_count 配置一致）。
         """
         ach_map = ach_map or {}
-        WIDTH = 900
-        COL_W = (WIDTH - 80) // 3
-        ROW_H = 46
+        # HTML 后端优先，失败降级 PIL
+        html_renderer = self._get_html_renderer('ranking')
+        if html_renderer is not None:
+            try:
+                return html_renderer.render(
+                    today_self, today_received, today_helped,
+                    month_self, month_received, month_helped,
+                    year, month, page, total_pages, system_name,
+                    avatar_dir, ach_map, max_rows)
+            except Exception as e:
+                logger.error(f"HTML 排行榜渲染失败，降级 PIL: {e}")
+                self._close_html_browser_on_error()
+        pal = self._palette()
+        W, MARGIN, GAP = 900, 26, 14
+        CARD_W = W - MARGIN * 2
+        COL_W = (CARD_W - GAP * 2) // 3
+        ROW_H, AV = 42, 34
         MAX_ROWS = max(int(max_rows), 1)
-        HEADER_H = 60
-        TITLE_H = 75
-        SUB_H = 25
-        SEP_H = 12
-        SEC_H = 30
-        FOOTER_H = 35
-        HEIGHT = TITLE_H + SUB_H + SEP_H + SEC_H + HEADER_H + MAX_ROWS * ROW_H + SEP_H + SEC_H + HEADER_H + MAX_ROWS * ROW_H + FOOTER_H + 20
 
-        img = Image.new("RGB", (WIDTH, HEIGHT), PINK_BG)
+        f_big = ImageFont.truetype(self.font_path, 26)
+        f_sub = ImageFont.truetype(self.font_path, 13)
+        f_sec = ImageFont.truetype(self.font_path, 15)
+        f_col = ImageFont.truetype(self.font_path, 14)
+        f_row = ImageFont.truetype(self.font_path, 15)
+        f_row_small = ImageFont.truetype(self.font_path, 12)
+        f_rank = ImageFont.truetype(self.font_path, 13)
+        f_count = ImageFont.truetype(self.font_path, 15)
+        f_page = ImageFont.truetype(self.font_path, 12)
+
+        SEC_PILL_H = 28
+        COL_HEAD = 46                      # 栏头胶囊 24 + 上下留白
+        SEC_GAP = 16
+
+        card_rgb = pal.card_fill[:3]
+        # 前三名奖牌：金 / 银 / 铜（竖直渐变 + 白字）
+        MEDALS = {
+            1: ((255, 213, 110), (236, 168, 58)),
+            2: ((228, 236, 245), (176, 192, 210)),
+            3: ((240, 194, 148), (203, 141, 90)),
+        }
+
+        def rows_of(data):
+            """截断到 MAX_ROWS，并过滤掉空行/长度不足的畸形数据（防止 row[0] 越界）。"""
+            out = []
+            for row in list(data)[:MAX_ROWS] if data else []:
+                if not row or len(row) < 4:
+                    continue
+                out.append(row)
+            return out
+
+        today_sets = [rows_of(today_self), rows_of(today_received), rows_of(today_helped)]
+        month_sets = [rows_of(month_self), rows_of(month_received), rows_of(month_helped)]
+        today_h = max([len(s) for s in today_sets] + [1])
+        month_h = max([len(s) for s in month_sets] + [1])
+
+        # ---- 高度：按各组实际行数，避免今日区只有 6 条却画 10 行留出大片空白 ----
+        TITLE_H, SUB_H = 42, 24
+        def group_h(n):
+            return SEC_PILL_H + 10 + COL_HEAD + n * ROW_H + 12
+        H = (MARGIN * 2 + TITLE_H + SUB_H
+             + group_h(today_h) + SEC_GAP + group_h(month_h) + 44)
+
+        img = rc.scene(W, H, pal, card_box=(MARGIN, MARGIN, W - MARGIN, H - MARGIN),
+                       card_radius=28, shadow_alpha=95, shadow_spread=1.3)
+        img.alpha_composite(rc.top_wash(
+            W, H, (MARGIN, MARGIN, W - MARGIN, H - MARGIN), 28, pal.feed_top, 130, 60))
         draw = ImageDraw.Draw(img)
-        font_big = ImageFont.truetype(self.font_path, 28)
-        font_title = ImageFont.truetype(self.font_path, 20)
-        font_small = ImageFont.truetype(self.font_path, 14)
-        font_row = ImageFont.truetype(self.font_path, 16)
-        font_row_small = ImageFont.truetype(self.font_path, 13)
-        font_count = ImageFont.truetype(self.font_path, 15)
-        SEP_COLOR = PINK_LIGHT
-        GRAY = (170, 140, 150)
-        BLACK = CHOCO
-        RED = CAKE_RED
 
-        y = 15
-        # 娅娅立绘接口：插件目录存在 denia.png 时绘制在标题左侧
-        self._draw_denia_logo(img, draw, size=44, xy=(30, y - 4))
-        title_text = RANKING_TITLE.format(year=year, month=month)
-        self._draw_text(draw, (WIDTH / 2, y), title_text, font=font_big, fill=BLACK, anchor="mt")
+        # ---- 标题 ----
+        y = MARGIN + 22
+        self._draw_denia_logo(img, draw, size=38, xy=(MARGIN + 2, y - 2))
+        self._draw_text(draw, (W / 2, y),
+                        RANKING_TITLE.format(year=year, month=month),
+                        font=f_big, fill=rc.darken(pal.title, 0.9), anchor='mt')
         y += TITLE_H
-        self._draw_text(draw, (WIDTH / 2, y), RANKING_SUBTITLE, font=font_small, fill=GRAY, anchor="mt")
+        self._draw_text(draw, (W / 2, y), RANKING_SUBTITLE,
+                        font=f_sub, fill=pal.subtitle, anchor='mt')
         y += SUB_H
-        draw.rectangle([0, y, WIDTH, y + SEP_H], fill=SEP_COLOR)
-        y += SEP_H
 
-        def draw_column(x_start, title, data_rows, start_y):
-            self._draw_text(draw, (x_start + COL_W / 2, start_y), title, font=font_title, fill=GRAY, anchor="mt")
-            yy = start_y + HEADER_H
-            for row in data_rows[:MAX_ROWS]:
-                rank, uid, nickname, count = row[0], row[1], row[2], row[3]
-                ach_count = row[4] if len(row) > 4 else 0
-                self._draw_text(draw, (x_start + 5, yy + ROW_H / 2), str(rank), font=font_row, fill=BLACK, anchor="lm")
-                mid_left = x_start + 35
-                mid_right = x_start + COL_W - 70
-                mid_center = (mid_left + mid_right) / 2
-                av_rgba = None
-                if avatar_dir and uid:
-                    av_path = os.path.join(avatar_dir, f"{uid}.png")
-                    if os.path.exists(av_path):
-                        try:
-                            av = Image.open(av_path).convert("RGBA")
-                            av = av.resize((45, 45))
-                            mask = Image.new("L", (45, 45), 0)
-                            ImageDraw.Draw(mask).ellipse((0, 0, 45, 45), fill=255)
-                            av_rgba = Image.new("RGBA", (45, 45), (0, 0, 0, 0))
-                            av_rgba.paste(av, (0, 0), mask)
-                        except Exception:
-                            av_rgba = None
-                avatar_w = 45 if av_rgba is not None else 0
-                gap = 8
-                badge = ""
-                if ach_count > 0:
-                    badge = f"🏆x{ach_count}"
-                badge_w = 0
-                if badge:
-                    badge_w = self._measure_text_width(draw, badge, font_row_small) + 4
-                nick_avail = (mid_right - mid_left) - avatar_w - gap - badge_w - (6 if badge else 0)
-                if nick_avail < 10:
-                    nick_avail = 10
-                chosen = None
-                has_emoji = any(ord(ch) > 0xFFFF for ch in nickname)
-                if not (has_emoji and not self._emoji_available()):
-                    for f in (font_row, font_row_small):
-                        if self._measure_text_width(draw, nickname, f) <= nick_avail:
-                            chosen = (nickname, f)
-                            break
-                    if chosen is None:
-                        truncated = self._truncate_text(draw, nickname, font_row_small, nick_avail)
-                        if truncated:
-                            chosen = (truncated, font_row_small)
-                total_w = avatar_w
-                if chosen:
-                    total_w += (gap if avatar_w > 0 else 0) + self._measure_text_width(draw, chosen[0], chosen[1])
-                if badge:
-                    total_w += 6 + badge_w
-                start_x = mid_center - total_w / 2
-                if av_rgba is not None:
-                    img.paste(av_rgba, (int(start_x), yy), av_rgba)
-                    start_x += avatar_w + gap
-                if chosen:
-                    text, f = chosen
-                    self._draw_text(draw, (start_x, yy + ROW_H / 2), text, font=f, fill=BLACK, anchor="lm")
-                    start_x += self._measure_text_width(draw, text, f) + 6
-                if badge:
-                    self._draw_text(draw, (start_x, yy + ROW_H / 2), badge, font=font_row_small, fill=PINK_DEEP, anchor="lm")
-                c_x = x_start + COL_W - 10
-                self._draw_text(draw, (c_x, yy + ROW_H / 2), str(count), font=font_count, fill=RED, anchor="rm")
-                yy += ROW_H
+        def draw_group(section_title, sets, col_titles, start_y, avail_rows):
+            """渲染一整组（今日 / 本月）：居中胶囊小节标题 + 三栏卡片，返回结束 y。"""
+            sec_text_w = draw.textlength(section_title, font=f_sec)
+            pw, ph = int(sec_text_w) + 48, SEC_PILL_H
+            px = (W - pw) / 2
+            grad = rc.pill(pw, ph, rc.mix(pal.feed_top, card_rgb, 0.55),
+                           rc.mix(pal.feed_bottom, card_rgb, 0.68), ph // 2)
+            img.alpha_composite(grad, dest=(int(px), int(start_y)))
+            draw.rounded_rectangle([px, start_y, px + pw, start_y + ph], radius=ph // 2,
+                                   outline=rc.mix(pal.feed_border, card_rgb, 0.3) + (255,),
+                                   width=1)
+            self._draw_text(draw, (W / 2, start_y + ph / 2 + 1), section_title,
+                            font=f_sec, fill=rc.darken(pal.weekend, 0.8), anchor='mm')
+            gy = start_y + SEC_PILL_H + 10
+            gh = COL_HEAD + avail_rows * ROW_H + 12
+            for i, (rows, col_title) in enumerate(zip(sets, col_titles)):
+                cx = MARGIN + i * (COL_W + GAP)
+                box = (cx, gy, cx + COL_W, gy + gh)
+                # 栏卡片：近白填充 + 主题深色投影，形成"浮在背景上"的层次
+                layer = rc.rounded_card_layer(
+                    W, H, box, radius=16,
+                    fill=rc.mix(pal.feed_top, card_rgb, 0.965) + (255,),
+                    border=rc.mix(pal.feed_border, card_rgb, 0.4), border_w=1,
+                    shadow=True, shadow_color=rc.darken(pal.weekend, 0.45, 0),
+                    shadow_blur=12, shadow_offset=4,
+                    shadow_alpha=85, shadow_spread=1.15)
+                img.alpha_composite(layer)
+                # 栏头胶囊
+                ct_w = int(draw.textlength(col_title, font=f_col)) + 32
+                chx = cx + (COL_W - ct_w) / 2
+                img.alpha_composite(rc.pill(ct_w, 24,
+                                            rc.mix(pal.feed_top, card_rgb, 0.72),
+                                            rc.mix(pal.feed_bottom, card_rgb, 0.82), 12),
+                                    dest=(int(chx), gy + 12))
+                self._draw_text(draw, (cx + COL_W / 2, gy + 24 + 1), col_title,
+                                font=f_col, fill=rc.darken(pal.subtitle, 0.78), anchor='mm')
+                ry = gy + COL_HEAD
+                for idx, row in enumerate(rows):
+                    rank, uid, nickname, count = row[0], row[1], row[2], row[3]
+                    ach = row[4] if len(row) > 4 else 0
+                    mid_y = int(round(ry + ROW_H / 2))
+                    # 名次：前三名渐变奖牌圆，其余淡色数字
+                    medal = MEDALS.get(rank) if isinstance(rank, int) else None
+                    mcx = cx + 26
+                    if medal:
+                        mc0, mc1 = medal
+                        d = 24
+                        mg = rc.pill(d, d, mc0, mc1, d // 2)
+                        mmask = Image.new('L', (d, d), 0)
+                        ImageDraw.Draw(mmask).ellipse((0, 0, d - 1, d - 1), fill=255)
+                        mlayer = Image.new('RGBA', (W, H), (0, 0, 0, 0))
+                        mlayer.paste(mg, (mcx - d // 2, mid_y - d // 2), mmask)
+                        img.alpha_composite(mlayer)
+                        draw.text((mcx, mid_y + 0.5), str(rank), font=f_rank,
+                                  fill=(255, 255, 255), anchor='mm')
+                    else:
+                        draw.text((mcx, mid_y), str(rank), font=f_rank,
+                                  fill=pal.subtitle, anchor='mm')
+                    inner_l = cx + 46
+                    inner_r = cx + COL_W - 46
+                    av_rgba = self._load_circle_avatar(avatar_dir, uid, AV)
+                    avatar_w = AV if av_rgba is not None else 0
+                    badge = f"x{ach}" if ach > 0 else ""
+                    badge_w = (self._measure_text_width(draw, badge, f_row_small) + 12) if badge else 0
+                    nick_avail = max((inner_r - inner_l) - avatar_w - 8 - badge_w - 10, 20)
+                    chosen = None
+                    has_emoji = any(ord(ch) > 0xFFFF for ch in nickname)
+                    if not (has_emoji and not self._emoji_available()):
+                        for f in (f_row, f_row_small):
+                            if self._measure_text_width(draw, nickname, f) <= nick_avail:
+                                chosen = (nickname, f)
+                                break
+                        if chosen is None:
+                            tr = self._truncate_text(draw, nickname, f_row_small, nick_avail)
+                            if tr:
+                                chosen = (tr, f_row_small)
+                    # 头像固定左对齐：昵称/徽章宽度不影响头像位置，杜绝逐行抖动。
+                    sx = inner_l
+                    if av_rgba is not None:
+                        img.alpha_composite(av_rgba, dest=(sx, mid_y - AV // 2))
+                        sx += avatar_w + 8
+                    if chosen:
+                        self._draw_text(draw, (sx, mid_y), chosen[0], font=chosen[1],
+                                        fill=rc.darken(pal.body, 0.85), anchor='lm')
+                        sx += int(round(self._measure_text_width(draw, chosen[0], chosen[1]))) + 6
+                    if badge:
+                        bw = badge_w
+                        bh = 18
+                        draw.rounded_rectangle(
+                            [sx, mid_y - bh / 2, sx + bw, mid_y + bh / 2],
+                            radius=bh // 2, fill=rc.mix(pal.feed_top, card_rgb, 0.7) + (255,),
+                            outline=rc.mix(pal.feed_border, card_rgb, 0.45) + (255,), width=1)
+                        self._draw_text(draw, (sx + bw / 2, mid_y), badge,
+                                        font=f_row_small, fill=pal.accent_text, anchor='mm')
+                    self._draw_text(draw, (cx + COL_W - 14, mid_y), str(count),
+                                    font=f_count, fill=pal.accent, anchor='rm')
+                    # 行间分隔线（最后一行不画）
+                    if idx < len(rows) - 1:
+                        sep_y = ry + ROW_H
+                        draw.line([(cx + 16, sep_y), (cx + COL_W - 16, sep_y)],
+                                  fill=rc.mix(pal.empty_border, card_rgb, 0.15), width=1)
+                    ry += ROW_H
+                if not rows:
+                    self._draw_text(draw, (cx + COL_W / 2, gy + COL_HEAD + 16),
+                                    '今天还没有人投喂哦', font=f_row_small,
+                                    fill=pal.subtitle, anchor='mm')
+            return gy + gh
 
-        self_col_title = RANKING_COL_SELF
-        recv_col_title = RANKING_COL_RECEIVED
-        help_col_title = RANKING_COL_HELP
+        cols = [RANKING_COL_SELF, RANKING_COL_RECEIVED, RANKING_COL_HELP]
+        y = draw_group(RANKING_TODAY, today_sets, cols, y, today_h)
+        y += SEC_GAP
+        y = draw_group(RANKING_MONTH, month_sets, cols, y, month_h)
 
-        self._draw_text(draw, (WIDTH / 2, y), RANKING_TODAY, font=font_title, fill=GRAY, anchor="mt")
-        y += SEC_H
+        y += 14
+        page_text = (RANKING_PAGE.format(page=page, total=total_pages, next=page + 1)
+                     if page < total_pages
+                     else RANKING_PAGE_LAST.format(page=page, total=total_pages))
+        self._draw_text(draw, (W / 2, y), page_text, font=f_page,
+                        fill=pal.subtitle, anchor='mt')
 
-        draw_column(40, self_col_title, today_self, y)
-        draw_column(40 + COL_W + 20, recv_col_title, today_received, y)
-        draw_column(40 + 2 * (COL_W + 20), help_col_title, today_helped, y)
-        y += HEADER_H + MAX_ROWS * ROW_H
-
-        draw.rectangle([0, y, WIDTH, y + SEP_H], fill=SEP_COLOR)
-        y += SEP_H
-
-        self._draw_text(draw, (WIDTH / 2, y), RANKING_MONTH, font=font_title, fill=GRAY, anchor="mt")
-        y += SEC_H
-
-        draw_column(40, self_col_title, month_self, y)
-        draw_column(40 + COL_W + 20, recv_col_title, month_received, y)
-        draw_column(40 + 2 * (COL_W + 20), help_col_title, month_helped, y)
-
-        y += HEADER_H + MAX_ROWS * ROW_H + 10
-        if page < total_pages:
-            page_text = RANKING_PAGE.format(page=page, total=total_pages, next=page + 1)
-        else:
-            page_text = RANKING_PAGE_LAST.format(page=page, total=total_pages)
-        self._draw_text(draw, (WIDTH / 2, y), page_text, font=font_small, fill=GRAY, anchor="mt")
-
-        file_path = os.path.join(self.temp_dir, f"ranking_{year}_{month}_p{page}_{int(time.time())}.png")
-        img.save(file_path)
+        file_path = os.path.join(
+            self.temp_dir, f"ranking_{year}_{month}_p{page}_{int(time.time())}.png")
+        img.convert('RGB').save(file_path, format='PNG')
         return file_path
-
     async def _get_period_ranking_data(self, db_path, cond_sql, cond_params, group_user_ids, group_id=''):
         all_users = []
         try:

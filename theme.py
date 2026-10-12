@@ -31,7 +31,12 @@ def parse_color(value, default):
     if v.startswith('rgba('):
         try:
             parts = [p.strip() for p in v[5:-1].split(',')]
-            return tuple(int(float(p)) for p in parts[:4])
+            # 主题 JSON 采用 CSS 习惯：alpha 是 0~1 小数（如 0.94），
+            # 需换算到 0~255，否则 int(0.94)=0 会让卡片完全透明
+            a = float(parts[3])
+            a = int(round(a * 255)) if a <= 1.0 else int(a)
+            return (int(float(parts[0])), int(float(parts[1])),
+                    int(float(parts[2])), a)
         except (ValueError, IndexError):
             return default
     if v.startswith('rgb('):

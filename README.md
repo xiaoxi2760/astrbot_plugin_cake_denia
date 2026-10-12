@@ -62,14 +62,43 @@
 | auto_download_font | bool | true | resources/fonts 无字体时自动下载默认字体（阿里妈妈方圆体 + emoji），失败回退系统字体 |
 | font_download_url | string | GitHub Releases | 中文字体下载地址，自备字体时填自己的链接，留空用默认 |
 | emoji_download_url | string | GitHub Releases | emoji 字体下载地址，Windows 系统自带 emoji 字体可不填 |
-| render_backend | string | pil | 日历渲染后端：`pil`（无额外依赖）或 `html`（HTML/CSS + Playwright + 系统 Chrome，效果与设计稿一致，失败自动降级 pil） |
+| render_backend | string | html | 渲染后端：`html`（HTML/CSS + Playwright + 系统 Chrome，**日历/排行榜/报告/生涯四类图均支持**，默认）或 `pil`（纯 Pillow 绘制，无额外依赖，效果略逊）。html 需要服务器安装 playwright 与 Chrome，未安装或渲染失败会**自动降级 pil**，不影响使用 |
 | theme_preset | string | white-1 | 日历主题：`white-1`（娅娅·泡泡初绽，默认）/ `white-2`（娅娅·马卡龙双层）/ `black-1`（达妮娅·暗夜泡泡）/ `black-2`（达妮娅·阿列夫之眼）/ `custom`（resources/theme.json 自定义） |
 
 > 达妮娅（暗夜）是**彩蛋**：无论 `theme_preset` 选什么主题，喂蛋糕回复都有 20% 概率以「达妮娅」（boss版）口吻出现，且**当日历图同时生成时，那张日历也会用达妮娅暗夜主题（black-1）渲染**。触发达妮娅彩蛋时，该条回复**不会触发 LLM 对话**。想关掉彩蛋，把 `resources/texts.py` 里的 `BLACK_*` 列表清空即可。
 
+## LLM 上下文
+
+触发 LLM 对话时，会把本次投喂的真实数据喂给模型（本次投喂块数、当日累计、投喂者连续天数、生涯累计、当前时段），因此娅娅的回应会贴合当下情境而不是通用撒娇。人设提示固定在 `LLM_SYSTEM_PROMPT`，上下文模板是 `LLM_CONTEXT_TEMPLATE`（均位于 `resources/texts.py`，可直接改文案）。统计查询异常时自动降级为固定 prompt，不会影响投喂计数。
+
+## 自动清理
+
+插件启动与每天首次调用时各执行一次维护：
+
+- `tmp/` 中超过 1 小时的临时图片/HTML
+- `avatars/` 中超过 7 天未更新的 QQ 头像缓存（退群/改名用户不再残留）
+- `metadata` 表中超过 3 天的日粒度占位键（`favour_first` / `daily_ops` / `llm_user` / `llm_count`，跨天后不可能再命中）
+
+`checkin` / `help_record` / `achievements` 历史数据不受影响，仍由 `auto_delete_last_month_data` 控制。
+
 ## 依赖
 
 无第三方依赖（AstrBot 自带 aiosqlite 与 Pillow）。
+
+## 渲染后端
+
+四类图（📅 日历 / 🏆 排行榜 / 📊 投喂报告 / 💗 生涯档案）共用同一个 `render_backend`：
+
+| 后端 | 说明 | 依赖 |
+| --- | --- | --- |
+| `html`（默认） | HTML/CSS + Playwright + 系统 Chrome，2x 高清，卡片投影细腻，长文本自动换行 | 需 `pip install playwright` + 服务器装 Chrome |
+| `pil` | 纯 Pillow 绘制，无额外依赖 | 无（AstrBot 自带 Pillow） |
+
+**降级行为**：选 `html` 但服务器没装 playwright/Chrome 时，日志会记录错误并自动回落到 `pil`，功能完全不受影响。想要最好的效果就装一下：
+
+```bash
+pip install playwright
+```
 
 ## 资源文件夹 `resources/`
 

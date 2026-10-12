@@ -66,10 +66,8 @@ DAILY_LIMIT_REPLIES = [
 
 # ============ 好感度联动提示（Favour_Ultra） ============
 # 每天第一次获得蛋糕时随机 +1~5 好感；未安装 Favour_Ultra 时不显示。
-# 自己喂变体（{n}=增加的好感）
-FAVOUR_BOOST = "\n（好感度 +{n}）"
-# 帮喂变体（{name}=被喂者昵称, {n}=增加的好感）
-FAVOUR_BOOST_TARGET = "\n（{name} 好感度 +{n}）"
+# 优先使用 Favour_Ultra 的 favour_change_line（❤️/🖤 格式），以下为兜底文案（{n}=增加的好感）
+FAVOUR_BOOST = "（好感度 +{n}）"
 
 # ============ 喂蛋糕回复 · 达妮娅（彩蛋：20% 概率随机出现，与主题无关） ============
 # 达妮娅 = 娅娅的「容器」真身 / boss 形态（幻灭之形）：温柔、懒散只是模仿出来的人类外壳，
@@ -131,13 +129,37 @@ LLM_SYSTEM_PROMPT = (
     "禁止说网络热梗，禁止元气撒娇，禁止热血感叹，禁止提及你是AI或模型。"
 )
 LLM_USER_PROMPT = "今天收到了一块小蛋糕，达妮娅想说点什么？"
+
+# LLM 上下文模板：把本次投喂的真实数据喂给模型，回复更贴合当下而非通用撒娇。
+# 可用占位：{cakes}=本次投喂块数、{today_total}=当日累计、{streak}=当前连续天数、
+# {total}=生涯累计、{time_hint}=时段描述、{user_name}=投喂者昵称
+# 改这个模板即可调整喂给模型的情境信息；人设固定在 LLM_SYSTEM_PROMPT。
+# 注意：模板必须保留全部占位，缺任一项会抛 KeyError 并自动降级为 LLM_USER_PROMPT。
+LLM_CONTEXT_TEMPLATE = (
+    "{user_name}刚刚给你喂了 {cakes} 块小蛋糕。\n"
+    "今天你已经收到 {today_total} 块；这个人已经连续喂了你 {streak} 天，"
+    "生涯累计收到 {total} 块。\n"
+    "现在是{time_hint}。\n"
+    "请以上面的情境回应一小段话。"
+)
+
+# 时段 → 描述（LLM 上下文用；凌晨/深夜自动切到更慵懒的语气）
+LLM_TIME_HINTS = (
+    (0, 5, "凌晨"),
+    (5, 11, "早上"),
+    (11, 14, "中午"),
+    (14, 18, "下午"),
+    (18, 23, "晚上"),
+    (23, 24, "深夜"),
+)
+
 # LLM 回复前缀（{text}=模型回复内容）
 LLM_REPLY_PREFIX = "娅娅有话想对你说——\n{text}"
 
 # ============ 成就 ============
 
-# 解锁提示（{icon}/{name}/{desc}）
-ACHIEVEMENT_UNLOCK = "🎉 解锁新成就：【{icon} {name}】{desc}！"
+# 解锁提示（{icon}/{name}/{desc}）——前导换行确保独立成行
+ACHIEVEMENT_UNLOCK = "\n🎉 解锁新成就：【{icon} {name}】{desc}！"
 # 成就墙标题（{name}/{unlocked}/{total}）
 ACHIEVEMENTS_TITLE = "🏆 {name} 的娅娅成就墙（{unlocked}/{total}）"
 ACHIEVEMENT_UNLOCKED_LINE = "{icon} ✅ {name}：{desc}"

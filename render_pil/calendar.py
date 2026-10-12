@@ -123,40 +123,14 @@ class PilCalendarRenderer:
         return img.resize((w, h))
 
     def _glow_layer(self, w, h):
-        layer = Image.new('RGBA', (w, h), (0, 0, 0, 0))
-        d = ImageDraw.Draw(layer)
-        for cx, cy, radius, color, strength in self._glows:
-            for rr in range(radius, 0, -4):
-                a = int(strength * (1 - rr / radius))
-                if a > 2:
-                    d.ellipse([cx - rr, cy - rr, cx + rr, cy + rr],
-                              outline=(color[0], color[1], color[2], a), width=3)
-        return layer
+        """柔和径向光晕（实心圆 + 高斯模糊，复用公共原语）。"""
+        from .. import render_common as rc
+        return rc.glow_layer(w, h, self._glows)
 
     def _bubbles_layer(self, w, h):
-        layer = Image.new('RGBA', (w, h), (0, 0, 0, 0))
-        for (x, y, size, opacity, fill) in self._bubbles:
-            r = size / 2
-            b = Image.new('RGBA', (size, size), (0, 0, 0, 0))
-            d = ImageDraw.Draw(b)
-            for rr in range(int(r), 0, -2):
-                k = rr / r
-                mix = int(255 * (1 - k) * 0.75)
-                col = (min(255, fill[0] + mix), min(255, fill[1] + mix), min(255, fill[2] + mix))
-                d.ellipse([r - rr, r - rr, r + rr, r + rr],
-                          outline=(col[0], col[1], col[2], 255), width=2)
-            # 玻璃高光（仿 CSS ::after / ::before）
-            d.ellipse([size * 0.26, size * 0.20, size * 0.26 + size * 0.26, size * 0.20 + size * 0.17],
-                      fill=(255, 255, 255, 235))
-            sp = size * 0.10
-            d.ellipse([size * 0.70, size * 0.66, size * 0.70 + sp, size * 0.66 + sp],
-                      fill=(255, 255, 255, 140))
-            # 整体不透明度（仅 alpha 通道）
-            r_, g_, b_, a = b.split()
-            a = a.point(lambda i: int(i * opacity))
-            b = Image.merge('RGBA', (r_, g_, b_, a))
-            layer.paste(b, (x, y), b)
-        return layer
+        """超采样玻璃泡泡（复用公共原语，与报告/生涯/排行榜一致）。"""
+        from .. import render_common as rc
+        return rc.bubble_layer(w, h, self._bubbles)
 
     def _card_shadow(self):
         sh = Image.new('RGBA', (self._W, self._H), (0, 0, 0, 0))

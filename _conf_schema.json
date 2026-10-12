@@ -90,11 +90,11 @@
         "default": "https://github.com/xiaoxi2760/astrbot_plugin_cake_denia/releases/download/v1.0.0/emoji.ttf"
     },
     "render_backend": {
-        "description": "日历渲染后端",
-        "hint": "pil=纯 PIL 绘制（无额外依赖，效果略逊）；html=HTML/CSS + Playwright + 系统 Chrome（效果与设计稿一致，服务器需安装 playwright 与 Chrome，失败自动降级 pil）",
+        "description": "渲染后端",
+        "hint": "html=HTML/CSS + Playwright + 系统 Chrome（日历/排行榜/报告/生涯四类图均支持，效果最好，默认）；pil=纯 Pillow 绘制（无额外依赖，效果略逊）。html 需要服务器安装 playwright 与 Chrome，未安装或渲染失败会自动降级 pil，不影响使用",
         "type": "string",
-        "default": "pil",
-        "options": ["pil", "html"]
+        "default": "html",
+        "options": ["html", "pil"]
     },
     "theme_preset": {
         "description": "日历主题",

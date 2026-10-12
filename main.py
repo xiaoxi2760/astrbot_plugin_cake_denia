@@ -28,7 +28,8 @@ from .resources.texts import (
     BLACK_FEED_SUCCESS, BLACK_FEED_MULTI, BLACK_HELP_FEED,
     BLACK_FEED_TOO_MANY, BLACK_DAILY_LIMIT_REPLIES,
     LLM_SYSTEM_PROMPT, LLM_USER_PROMPT, LLM_REPLY_PREFIX,
-    FAVOUR_BOOST, FAVOUR_BOOST_TARGET,
+    LLM_CONTEXT_TEMPLATE, LLM_TIME_HINTS,
+    FAVOUR_BOOST,
     ACHIEVEMENT_UNLOCK, ACHIEVEMENTS_TITLE,
     ACHIEVEMENTS_PROGRESS, ACHIEVEMENTS_ERROR,
     ACHIEVEMENT_UNLOCKED_LINE, ACHIEVEMENT_LOCKED,
@@ -146,7 +147,7 @@ class CakeDeniaPlugin(Star):
         self.auto_download_font = bool(config.get("auto_download_font", True))
         self.font_download_url = config.get("font_download_url", DEFAULT_FONT_URL)
         self.emoji_download_url = config.get("emoji_download_url", DEFAULT_EMOJI_URL)
-        self.render_backend = config.get("render_backend", "pil")
+        self.render_backend = config.get("render_backend", "html")
         self.theme_preset = config.get("theme_preset", "white-1")
         # 好感度联动：每天首次获得蛋糕才加 1~5 好感（默认 True）；改为 False 则每次喂蛋糕都加（测试用）
         self.favour_daily_limit = bool(config.get("favour_daily_limit", True))
@@ -166,7 +167,8 @@ class CakeDeniaPlugin(Star):
         os.makedirs(self.avatar_dir, exist_ok=True)
 
         self.core = CakeCore(self.font_path, self.db_path, self.temp_dir,
-                             self.render_backend, self.theme_preset)
+                             self.render_backend, self.theme_preset,
+                             avatar_dir=self.avatar_dir)
 
         self._initialized = False
         self._init_lock = asyncio.Lock()
@@ -181,6 +183,8 @@ class CakeDeniaPlugin(Star):
                 await self._init_db()
                 await self._monthly_cleanup()
                 await self._cleanup_temp_files()
+                await self._cleanup_avatars()
+                await self._cleanup_metadata()
                 # 资源字体缺失时自动下载默认字体（失败静默降级，不影响使用）
                 if self.auto_download_font:
                     await self.core.ensure_fonts(self.font_download_url, self.emoji_download_url)
@@ -188,13 +192,15 @@ class CakeDeniaPlugin(Star):
         await self._maybe_periodic_maintenance()
 
     async def _maybe_periodic_maintenance(self):
-        """周期维护：每天最多执行一次月度清理与临时文件清理（跨月不重启也能清）。"""
+        """周期维护：每天最多执行一次数据/临时文件/头像清理（跨月不重启也能清）。"""
         now = time.time()
         if now - self._last_maintenance < 86400:
             return
         self._last_maintenance = now
         await self._monthly_cleanup()
         await self._cleanup_temp_files()
+        await self._cleanup_avatars()
+        await self._cleanup_metadata()
 
     @filter.on_plugin_unloaded()
     async def _close_html_browser(self, metadata=None):
@@ -205,6 +211,56 @@ class CakeDeniaPlugin(Star):
             await asyncio.to_thread(_shutdown_html_renderer)
         except Exception:
             pass
+
+    async def _cleanup_avatars(self, max_age: float = 7 * 86400):
+        """清理 avatar 缓存中超过 max_age 秒未被更新的头像文件。
+
+        头像按 uid 命名并长期缓存，退群用户/已改名用户的头像会永久残留；
+        只清理超过一周未访问（mtime 更新）的文件，近期活跃用户下次仍走缓存。
+        """
+        try:
+            if not os.path.isdir(self.avatar_dir):
+                return
+            now = time.time()
+            removed = 0
+            for name in os.listdir(self.avatar_dir):
+                if not name.endswith('.png'):
+                    continue
+                path = os.path.join(self.avatar_dir, name)
+                try:
+                    if os.path.isfile(path) and now - os.path.getmtime(path) > max_age:
+                        os.remove(path)
+                        removed += 1
+                except OSError:
+                    continue
+            if removed:
+                logger.info(f"清理过期头像缓存 {removed} 个")
+        except Exception as e:
+            logger.error(f"清理头像缓存失败: {e}")
+
+    async def _cleanup_metadata(self, keep_days: int = 3):
+        """清理 metadata 表中超过 keep_days 天的日粒度占位键。
+
+        涉及 favour_first / daily_ops / llm_user / llm_count 四类键，均为
+        「YYYY-MM-DD」结尾的当日占位，跨天后不可能再被命中，无保留价值。
+        只按日期后缀判断，保留最近 keep_days 天以防跨时区边界误删。
+        """
+        try:
+            cutoff = (date.today() - timedelta(days=keep_days)).strftime("%Y-%m-%d")
+            prefixes = ("favour_first:", "daily_ops:", "llm_user:", "llm_count:")
+            async with aiosqlite.connect(self.db_path, timeout=5.0) as conn:
+                total = 0
+                for prefix in prefixes:
+                    cur = await conn.execute(
+                        "DELETE FROM metadata WHERE key LIKE ? "
+                        "AND substr(key, -10) < ?",
+                        (f"{prefix}%", cutoff))
+                    total += cur.rowcount or 0
+                await conn.commit()
+                if total:
+                    logger.info(f"清理过期 metadata 占位 {total} 条（{cutoff} 之前）")
+        except Exception as e:
+            logger.error(f"清理 metadata 占位失败: {e}")
 
     async def _cleanup_temp_files(self, max_age: float = 3600):
         """清理 tmp 目录中超过 max_age 秒的临时图片/HTML，避免长期运行积累。"""
@@ -379,9 +435,8 @@ class CakeDeniaPlugin(Star):
                 logger.error(f"写入首喂标记失败: {e}")
                 return None
         try:
-            # 好感度插件现为纯全局模式：session = 适配器前缀（如 "aiocqhttp"），与 Favour_Ultra._get_session_id 对齐
-            origin = getattr(event, 'unified_msg_origin', None) or ""
-            session_id = origin.split(":")[0] if ":" in origin else "global"
+            # 好感度插件现为纯全局模式：所有用户共享一份好感度，session = "global"
+            session_id = "global"
             delta = random.randint(1, 5)
             rec = await dbm.get_favour(uid, session_id)
             old = rec.favour if rec else 0
@@ -394,7 +449,19 @@ class CakeDeniaPlugin(Star):
                 f"db={getattr(dbm, 'db_path', None)} uid={uid} session={session_id!r} "
                 f"old={old} delta={delta} new={new} ok={ok}"
             )
-            return delta if ok else None
+            if not ok:
+                return None
+            # 优先用 Favour_Ultra 的 favour_change_line（❤️/🖤 格式），缺失时兜底
+            line = None
+            change_line = getattr(plugin, 'favour_change_line', None)
+            if callable(change_line):
+                try:
+                    line = change_line(new, delta)
+                except Exception:
+                    line = None
+            if not line:
+                line = FAVOUR_BOOST.format(n=delta)
+            return (delta, line)
         except Exception as e:
             logger.error(f"联动好感度失败: {e}")
             return None
@@ -602,22 +669,58 @@ class CakeDeniaPlugin(Star):
         except Exception as e:
             logger.error(f"回滚 LLM 占位失败: {e}")
 
-    async def _maybe_llm_reply(self, user_id: str, adjusted_date: str):
-        """条件触发娅娅 LLM 回复：今日累计达阈值 + 概率命中 + 原子占用次数上限。"""
+    async def _build_llm_prompt(self, user_id: str, adjusted_date: str, cake_count: int,
+                               user_name: str, today_total: int) -> str:
+        """组装带上下文的 LLM prompt：本次投喂数 + 当日累计 + 连续天数 + 生涯累计 + 时段。
+
+        统计查询失败时降级为固定 LLM_USER_PROMPT，保证 LLM 链路不被统计异常拖垮。
+        """
+        hour = datetime.now().hour
+        time_hint = "晚上"
+        for lo, hi, name in LLM_TIME_HINTS:
+            if lo <= hour < hi:
+                time_hint = name
+                break
+        try:
+            cursor_stats = await self._get_user_achievement_stats(user_id)
+            streak = cursor_stats.get('streak', 0)
+            total = cursor_stats.get('total_cakes', 0)
+        except Exception as e:
+            logger.error(f"组装 LLM 上下文失败，降级为固定 prompt: {e}")
+            return LLM_USER_PROMPT
+        try:
+            return LLM_CONTEXT_TEMPLATE.format(
+                user_name=user_name or "这个人",
+                cakes=max(1, int(cake_count or 1)),
+                today_total=int(today_total or 0),
+                streak=int(streak or 0),
+                total=int(total or 0),
+                time_hint=time_hint,
+            )
+        except (KeyError, ValueError) as e:
+            logger.error(f"LLM 上下文模板渲染失败，降级为固定 prompt: {e}")
+            return LLM_USER_PROMPT
+
+    async def _maybe_llm_reply(self, user_id: str, adjusted_date: str,
+                              cake_count: int = 1, user_name: str = ""):
+        """条件触发娅娅 LLM 回复：今日累计达阈值 + 概率命中 + 原子占用次数上限。
+
+        cake_count / user_name 用于组装上下文，让回复贴合本次投喂而非通用文案。
+        """
         if not self.llm_enabled:
             return None
         user_key = None
         count_key = None
         try:
-            if self.llm_daily_min_cakes > 0:
-                async with aiosqlite.connect(self.db_path) as conn:
-                    cursor = await conn.execute(
-                        "SELECT COALESCE(SUM(cake_count),0) FROM checkin WHERE user_id = ? AND checkin_date = ?",
-                        (user_id, adjusted_date))
-                    row = await cursor.fetchone()
-                    today_total = row[0] if row else 0
-                if today_total < self.llm_daily_min_cakes:
-                    return None
+            # 上下文需要当日累计，无论阈值是否开启都先查一次
+            async with aiosqlite.connect(self.db_path) as conn:
+                cursor = await conn.execute(
+                    "SELECT COALESCE(SUM(cake_count),0) FROM checkin WHERE user_id = ? AND checkin_date = ?",
+                    (user_id, adjusted_date))
+                row = await cursor.fetchone()
+                today_total = row[0] if row else 0
+            if self.llm_daily_min_cakes > 0 and today_total < self.llm_daily_min_cakes:
+                return None
             if random.random() >= self.llm_trigger_probability:
                 return None
             # 原子占位：user_key 未占用 且 count_key 未达上限 才成功（与每日限额同思路）
@@ -645,9 +748,11 @@ class CakeDeniaPlugin(Star):
                         "ON CONFLICT(key) DO UPDATE SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT)",
                         (count_key,))
                 await conn.commit()
+            prompt = await self._build_llm_prompt(
+                user_id, adjusted_date, cake_count, user_name, today_total)
             provider = await self.context.get_using_provider_async()
             resp = await provider.text_chat(
-                prompt=LLM_USER_PROMPT, system_prompt=LLM_SYSTEM_PROMPT)
+                prompt=prompt, system_prompt=LLM_SYSTEM_PROMPT)
             text = (getattr(resp, 'completion_text', '') or '').strip()
             if not text:
                 # 占位回滚，避免空回复白占次数
@@ -750,7 +855,8 @@ class CakeDeniaPlugin(Star):
             for target_id, tname in zip(targets, at_names):
                 b = target_boosts.get(target_id)
                 if b:
-                    chain.append(Plain(FAVOUR_BOOST_TARGET.format(name=tname, n=b)))
+                    _delta, line = b
+                    chain.append(Plain(f"\n{tname} {line}"))
             # 帮喂成就：helper 的替喂成就 + 每个 target 的被喂成就
             for ach_uid in [user_id] + list(targets):
                 try:
@@ -801,7 +907,8 @@ class CakeDeniaPlugin(Star):
             ach_texts = [ACHIEVEMENT_UNLOCK.format(icon=a['icon'], name=a['name'], desc=a['desc'])
                          for a in new_achievements]
             # LLM 概率对话（触发达妮娅彩蛋时禁用，保持神秘感）
-            llm_text = None if egg else await self._maybe_llm_reply(user_id, adjusted_date)
+            llm_text = None if egg else await self._maybe_llm_reply(
+                user_id, adjusted_date, cake_count, user_name)
 
             chain = []
             if result[2]:
@@ -816,7 +923,8 @@ class CakeDeniaPlugin(Star):
             for t in ach_texts:
                 chain.append(Plain(t))
             if boost:
-                chain.append(Plain(FAVOUR_BOOST.format(n=boost)))
+                _delta, line = boost
+                chain.append(Plain(f"\n{line}"))
             if llm_text:
                 chain.append(Plain(LLM_REPLY_PREFIX.format(text=llm_text)))
             yield event.chain_result(chain)
@@ -1216,9 +1324,10 @@ class CakeDeniaPlugin(Star):
             return
         group_user_ids = {str(m.get('user_id')) for m in members}
 
-        today = date.today()
-        year, month_val = today.year, today.month
+        # 今日/本月口径与入库调整日保持一致（day_start_time 非 00:00 时，
+        # 凌晨时段按 date.today() 会把「今天」的记录算到上个月）
         adjusted_date_str = self._get_adjusted_date()
+        year, month_val = int(adjusted_date_str[:4]), int(adjusted_date_str[5:7])
         month_str = f"{year}-{month_val:02d}"
 
         raw_today_self = await self.core._get_period_ranking_data(
