@@ -374,16 +374,47 @@ class CakeDeniaPlugin(Star):
             logger.error(f"查询群管理权限失败: {e}")
         return False
 
+    @staticmethod
+    def _bot_self_ids(event: AstrMessageEvent) -> set:
+        """收集机器人的各种 id 写法（各平台字段不统一，取并集宁可多滤不可漏）。"""
+        ids = set()
+        try:
+            v = getattr(event, 'get_self_id', None)
+            if callable(v):
+                v = v()
+            if v:
+                ids.add(str(v))
+        except Exception:
+            pass
+        mo = getattr(event, 'message_obj', None)
+        if mo is not None and getattr(mo, 'self_id', None):
+            ids.add(str(mo.self_id))
+        return ids
+
     def _get_at_targets(self, event: AstrMessageEvent) -> list:
-        targets = []
+        """取被 @ 的人（替喂目标）。
+
+        两个坑：
+        1. 必须排除机器人自己。别人 @ 机器人 发 🍰 本意是「正常喂」，若把机器人
+           当替喂目标，就会记成「某人替机器人送蛋糕」，替喂榜多一条、机器人还被
+           当成被喂对象刷好感度。
+        2. 同一个人被重复 @ 要去重，否则 ON CONFLICT 会把蛋糕数累加多次。
+        """
+        bot_ids = self._bot_self_ids(event)
+        targets, seen = [], set()
         try:
             message_obj = event.message_obj
             if hasattr(message_obj, 'message') and message_obj.message:
                 for seg in message_obj.message:
                     if getattr(seg, 'type', None) == 'at' or seg.__class__.__name__ == 'At':
                         qq = getattr(seg, 'qq', None)
-                        if qq and str(qq) != 'all':
-                            targets.append(str(qq))
+                        if not qq:
+                            continue
+                        qq = str(qq)
+                        if qq == 'all' or qq in bot_ids or qq in seen:
+                            continue
+                        seen.add(qq)
+                        targets.append(qq)
         except Exception:
             pass
         return targets
